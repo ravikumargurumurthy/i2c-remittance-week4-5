@@ -113,7 +113,17 @@ class FileBasedEmailSource:
             "FileBasedEmailSource does not support attachment content. "
             "Use APIBasedEmailSource for attachment work."
         )
+    def find_message_id_by_filename(self, filename_keyword: str) -> str | None:
+        """Find a message_id whose backing file's name contains the keyword.
 
+        Useful for evals that identify samples by descriptive filename rather
+        than message_id.
+        """
+        for mid, path in self._index.items():
+            if filename_keyword in path.name:
+                return mid
+        return None
+    
     def list_known_message_ids(self) -> list[str]:
         return sorted(self._index.keys())
 

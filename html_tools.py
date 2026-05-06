@@ -144,3 +144,162 @@ def find_table_with_headers(
         if all(k in header_text for k in required):
             return tbl
     return None
+
+
+# ============================================================
+# Triage-oriented table finders
+# ============================================================
+#
+# Each finder looks for a specific kind of table by checking header keywords.
+# Returns the FIRST matching table found in body order (skipping later
+# duplicates that come from quoted forward chains).
+
+
+def find_bank_credit_table(html: str) -> dict | None:
+    """Find the bank-credit table.
+
+    Two formats observed in real samples:
+    - NEFT format: 'Tran Date / Particulars / Credit Amount'
+    - Cheque/IFT format: 'Co Code / Collection Date / Chq No & Bank GL /
+      Particulars / Collection Amt'
+
+    Returns the first matching table or None.
+    """
+    # Try NEFT format first (most common — 9 of 10 samples)
+    table = find_table_with_headers(html, ["tran date", "credit amount"])
+    if table:
+        return table
+
+    # Try cheque/IFT format (1 of 10 samples)
+    table = find_table_with_headers(html, ["collection date", "collection amt"])
+    if table:
+        return table
+
+    # Fallback: any table with 'particulars' and an amount column
+    # (catches edge cases where headers are slightly different)
+    table = find_table_with_headers(html, ["particulars"])
+    if table:
+        # Verify it has at least 3 columns and looks like a credit table
+        if table["col_count"] >= 3:
+            return table
+
+    return None
+
+
+def find_allocation_table(html: str) -> dict | None:
+    """Find the invoice-allocation table.
+
+    Real samples use varying header names for the same logical columns:
+    - Customer ID: Customer / Cust.No / Co Code / Customer Code / Code / Company Code
+    - Customer name: Customer name / Cust.Name / Company Name
+    - Invoice column: Reference / Invoice No / Invoice No.
+    - Amount columns: Amount / Amt / Invoice Amt / Invoice Amount / Net Amount
+
+    Strategy: an allocation table has at least three of these signals:
+    1. A customer-identifier column
+    2. An invoice-reference column
+    3. An amount column
+
+    Excludes aging reports (which have bucket headers like '00 - 0030').
+
+    Returns the first matching table or None.
+    """
+    tables = extract_html_tables(html)
+
+    customer_keywords = {
+        "customer", "cust.no", "cust no", "co code", "customer code",
+        "company code", "company name", "cust.name",
+    }
+    invoice_keywords = {
+        "reference", "invoice no", "invoice no.", "invoice number",
+    }
+    amount_keywords = {
+        "amount", "amt", "invoice amt", "invoice amount", "net amount", "net amt",
+    }
+    aging_indicators = {
+        "00 - 0030", "31 - 0090", "91 - 0180", "181 - 0365", "366 - 1095",
+        "00-0030", "31-0090", "91-0180",
+    }
+
+    for tbl in tables:
+        if not tbl["header_row"]:
+            continue
+
+        header_lower = [h.lower() for h in tbl["header_row"]]
+        header_text = " ".join(header_lower)
+
+        # Skip aging reports
+        if any(indicator in header_text for indicator in aging_indicators):
+            continue
+
+        # Need to be at least 4 columns (customer, name, invoice, amount minimum)
+        if tbl["col_count"] < 4:
+            continue
+
+        has_customer = any(k in header_text for k in customer_keywords)
+        has_invoice = any(k in header_text for k in invoice_keywords)
+        has_amount = any(k in header_text for k in amount_keywords)
+
+        if has_customer and has_invoice and has_amount:
+            return tbl
+
+    return None
+
+
+def find_customer_only_table(html: str) -> dict | None:
+    """Find a 2-column 'Customer / Customer name' table.
+
+    This is the partial_booking signature — customer is identified but no
+    invoice allocation is provided. Used for cases like 'Please Book on FIFO
+    Basis' where Mahek leaves the invoice allocation to the collections team.
+
+    Returns the table or None.
+    """
+    tables = extract_html_tables(html)
+
+    for tbl in tables:
+        if not tbl["header_row"]:
+            continue
+        if tbl["col_count"] != 2:
+            continue
+
+        header_lower = [h.lower() for h in tbl["header_row"]]
+
+        # Must look like (customer-id, customer-name)
+        first_col = header_lower[0]
+        second_col = header_lower[1]
+
+        first_is_customer_id = any(
+            k in first_col
+            for k in ("customer", "cust.no", "cust no", "code")
+        )
+        second_is_customer_name = any(
+            k in second_col
+            for k in ("customer name", "cust.name", "company name", "name")
+        )
+
+        if first_is_customer_id and second_is_customer_name:
+            return tbl
+
+    return None
+
+
+def find_account_reference(text: str) -> str | None:
+    """Find an 'On A/C - <number>' reference in plain email text.
+
+    Used to detect on_account_only emails: 'On A/C – 4000000321' or
+    'On A/C - 13139'. The dash may be hyphen, en-dash, or em-dash.
+
+    Returns the account reference number as a string, or None.
+    """
+    import re
+
+    # Pattern: 'On A/C' followed by - or – or — and a digit sequence
+    pattern = re.compile(
+        r"on\s+a\s*/\s*c\s*[\-\u2013\u2014]\s*(\d+)",
+        re.IGNORECASE,
+    )
+    match = pattern.search(text)
+    if match:
+        return match.group(1)
+    return None
