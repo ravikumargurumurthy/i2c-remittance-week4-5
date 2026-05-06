@@ -151,3 +151,88 @@ rows). Chose per-row for Day 2 because:
 - 3 calls × 2 seconds = 6 seconds is acceptable
 - Per-row is more general — works for any number of rows
 Can revisit in Day 7 polish if performance becomes a concern.
+
+
+## Day 2 — Bank credit extraction journey
+
+10/10 evals passing single-run, 10/10 with 4/5 multi-run threshold across
+six payment modes (NEFT, RTGS, IMPS, UPI, IFT, OTHER) and three table
+formats (NEFT 3-col, IFT 5-col, non-standard).
+
+The path to 10/10 had three meaningful debugging episodes worth capturing.
+
+### Episode 1: Silent LLM failures (Azure DNS resolution)
+
+Initial smoke test produced "every row has None for all LLM-extracted
+fields" — a uniform failure pattern. Diagnosed via direct LLM call:
+underlying cause was DNS resolution failure on the work box (httpcore
+ConnectError: Temporary failure in name resolution).
+
+The original `_parse_narrative_with_llm` swallowed all exceptions and
+returned an empty dict. The fact that "every row produces None" was the
+only signal made debugging slower than necessary.
+
+Fix: rewrote `_parse_narrative_with_llm` to return `{"_error": "..."}`
+on failures, and `extract_one_bank_credit` now prints `[WARN]` to stderr
+when LLM extraction fails. Future failures will be visible immediately
+rather than appearing as mysterious empty fields.
+
+### Episode 2: The "first match" trap (column lookup bug)
+
+After fixing the DNS issue, 9/10 emails extracted correctly. Email 03
+(IFT format) consistently returned `mode=OTHER, utr=None, payer=None`
+and the LLM appeared to be ignoring the IFT format entirely.
+
+Wasted ~30 minutes tuning the prompt before realizing the prompt was fine
+— the input being fed to the LLM was wrong. The diagnostic that revealed
+this: print the actual cell content being passed.
+
+The bug: `_find_header_index(headers, ["particulars", "chq no & bank gl"])`
+was intended to mean "try particulars first; fall back to chq no & bank
+gl." But the implementation iterated headers first and candidates second,
+so the FIRST header matching ANY candidate won. Since "Chq No & Bank GL"
+appears before "Particulars" in the IFT 5-column table, the fallback
+hit before the primary, and the LLM received '11528551' (an 8-digit
+cheque number) as the narrative.
+
+Fix: inverted loop order so candidates are tried in priority sequence,
+each candidate checked against all headers before moving to the next.
+
+### Episode 3: Hypothetical complexity is a bug source
+
+The original code had `_find_header_index(headers, ["particulars",
+"chq no & bank gl"])` for the narrative column — built defensively for
+a hypothetical case where some emails might not have a Particulars
+column. The fallback was never needed: across all observed Adani O2C-GCC
+formats, the narrative column is consistently named 'Particulars'.
+
+User pushed back: "i have provided the actual schema of the bank
+statement. there is a narrative field." This was correct — the simpler
+design (`["particulars"]` only) would have avoided Episode 2 entirely.
+
+Lesson: write code for the domain you actually have, not the domain you
+imagine you might have. Real data drives schema, not speculation. The
+"defensive" fallback added complexity that caused a real bug, while
+solving for a problem that didn't exist.
+
+When in doubt, ask the domain expert — they answer faster than the code
+reveals the bug.
+
+### Generalizable patterns
+
+1. Silent failures are debugging poison. Make errors visible at the
+   first observable surface (logs, return value, raised exception).
+   Even a one-line `[WARN]` to stderr saves hours of mystery.
+
+2. When LLM output looks broken, ALWAYS print the input being fed to
+   the LLM as the FIRST diagnostic step. Don't tweak the prompt until
+   you've verified the LLM is seeing what you think it's seeing.
+
+3. Helper functions that take a list of "candidates" or "alternatives"
+   need explicit semantics about priority order vs position order.
+   Document the behavior on the function and write a test that asserts
+   the priority order is honored.
+
+4. Speculative fallbacks are not free — they add complexity that can
+   cause bugs while solving for problems that don't exist. Real data
+   drives the schema; ask the domain expert when in doubt.
