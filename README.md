@@ -1,0 +1,96 @@
+# I2C Remittance Extraction Agent
+
+The email-extraction layer of an I2C cash application system for Adani
+Ports & SEZ. Reads remittance emails from the corporate mailbox, extracts
+structured `RemittanceExtraction` records consumed by the downstream
+matching agent.
+
+## Status
+
+Project 1, Day 0 of 7. Foundation in place:
+
+- Email source abstraction (file-based for dev, API-based for prod)
+- Pydantic schemas covering 4 email kinds × 6 payment modes
+- HTML table extraction tool for Outlook-generated email bodies
+- Smoke test passing against 10 real sample emails
+
+Next: Day 1 builds the triage agent (classifies email_kind only).
+
+## Design pillars
+
+- **Real-data driven.** Schema and tools designed against 10 actual Adani
+  O2C-GCC emails covering full bookings, partial bookings, on-account
+  payments, and non-remittance noise.
+- **Source abstraction.** Same agent code runs against local files (dev)
+  or live email API (prod). One protocol, two implementations.
+- **LLM where it earns its place.** HTML parsing is deterministic
+  (BeautifulSoup). LLM handles column-name variation, table-purpose
+  classification, and reconciliation reasoning — tasks where rules fail.
+
+## Quick start
+
+```bash
+git clone https://github.com/<your-username>/i2c-remittance-week4-5.git
+cd i2c-remittance-week4-5
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+cp .env.example .env  # fill in API keys
+
+# Add your real samples to the gitignored folder
+mkdir -p data/sample_emails_REAL
+# (copy your real emails here)
+
+python smoke_test.py  # verifies the foundation
+```
+
+## What's in here
+
+- `email_source.py` — Protocol-based abstraction with FileBasedEmailSource
+  and APIBasedEmailSource
+- `schemas.py` — RemittanceExtraction, BankCreditLine, InvoiceAllocation,
+  EmailKind, PaymentMode
+- `html_tools.py` — BeautifulSoup-based HTML table extraction
+- `smoke_test.py` — runs all 10 samples through the foundation
+- `INTEGRATION.md` — design doc covering the agent boundary
+- `data/sample_emails_REAL/` — real client emails (gitignored)
+
+## Sensitivity
+
+The 10 sample emails contain real Adani internal data — employee names,
+customer names, transaction details. They live in `data/sample_emails_REAL/`
+which is gitignored. **Never commit them.** A future task: generate
+synthetic equivalents preserving structure for the public eval suite.
+
+## What's next
+
+- Day 1 (~3 hrs): Triage agent (10/10 evals on email_kind classification)
+- Day 2 (~3 hrs): Bank credit extraction (9/10 evals)
+- Day 3 (~3 hrs): Invoice allocation extraction (6/10 evals)
+- Day 4 (~3 hrs): Edge cases (UPI, IFT, partial bookings)
+- Day 5 (~3 hrs): Wire to Week 3 data layer (customer master lookup)
+- Day 6 (~3 hrs): Streamlit HITL UI
+- Day 7 (~3 hrs): Polish, FINDINGS, commit
+
+
+## Scope: body-first extraction
+
+This agent extracts remittance data from email body HTML. In the 10 real
+sample emails, 9 contain all data in the body and 1 (a non-remittance) has
+attachments. The body-first scope covers the dominant case in our sample
+data.
+
+**Attachment handling is planned (Project 1 Day 8-9 extension), not a
+Day 1-7 deliverable.** When `hasAttachments=true` AND body HTML lacks
+recognizable tables, the agent routes the email as
+`email_kind=needs_attachment_parsing` — a deferred classification that
+honestly signals "I'd handle this if I could parse the attachment yet."
+
+This pattern mirrors Week 3's `awaiting_remittance` band: rather than
+guess incorrectly, the agent acknowledges its current limitations and
+defers to a later pipeline stage.
+
+When attachment handling is added, these emails will be re-classified
+into one of the four primary kinds based on attachment content.
