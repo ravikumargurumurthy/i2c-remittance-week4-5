@@ -32,13 +32,24 @@ PASS_THRESHOLD = int(os.getenv("PASS_THRESHOLD", str(max(1, EVAL_RUNS))))
 def _check_one_run(case, result):
     """Validate one classification against expected. Returns (passed, reason)."""
     expected = case["expected"]
+    
+    # Existing email_kind check...
     if "email_kind" in expected:
         if result.email_kind.value != expected["email_kind"]:
             return False, (
                 f"email_kind: got {result.email_kind.value!r}, "
-                f"expected {expected['email_kind']!r}. "
-                f"Reasoning: {result.reasoning}"
+                f"expected {expected['email_kind']!r}"
             )
+    
+    # NEW: signal-level checks
+    expected_signals = case.get("expected_signals", {})
+    for signal_name, signal_value in expected_signals.items():
+        actual = result.detected_signals.get(signal_name)
+        if actual != signal_value:
+            return False, (
+                f"signal {signal_name}: got {actual!r}, expected {signal_value!r}"
+            )
+    
     return True, None
 
 

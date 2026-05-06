@@ -28,6 +28,7 @@ from html_tools import (
     find_allocation_table,
     find_bank_credit_table,
     find_customer_only_table,
+    find_payment_intent,
 )
 from schemas import EmailKind
 
@@ -56,12 +57,20 @@ def classify_email(email_json: dict) -> TriageResult:
     customer_only = find_customer_only_table(html)
     account_ref = find_account_reference(text)
 
+    intent_value, intent_remark_raw = find_payment_intent(text)
+
+    if account_ref and not intent_value:
+        intent_value = "on_account"
+        intent_remark_raw = f"On A/C - {account_ref}"
+
     signals = {
         "has_bank_credit_table": bank_credit is not None,
         "has_allocation_table": allocation is not None,
         "has_customer_only_table": customer_only is not None,
         "account_reference": account_ref,
         "has_attachments": has_attachments,
+        "payment_intent": intent_value,   # NEW
+        "intent_remark_raw": intent_remark_raw,   # NEW
     }
 
     # Rule 1: no bank-credit table

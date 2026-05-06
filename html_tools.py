@@ -303,3 +303,53 @@ def find_account_reference(text: str) -> str | None:
     if match:
         return match.group(1)
     return None
+
+
+def find_payment_intent(text: str) -> tuple[str | None, str | None]:
+    """Detect special payment instructions in email body text.
+    
+    Returns (intent_value, raw_remark) where intent_value is one of:
+        'advance', 'security_deposit', 'on_account', 'fifo_instruction',
+        'other_special', or None if no remark detected.
+    
+    Returns the raw matched text as the second element for audit.
+    """
+    import re
+
+    # Order matters: more specific patterns first so they win
+    patterns = [
+        # Security deposit (specific — check before "advance" because
+        # 'security deposit advance' is still a deposit)
+        ("security_deposit",
+         re.compile(r"\bsecurity\s+deposit\b", re.IGNORECASE)),
+
+        # Advance payment (explicit)
+        ("advance",
+         re.compile(r"\badvance\s+payment\b", re.IGNORECASE)),
+
+        # Advance (single word)
+        ("advance",
+         re.compile(r"(?:^|\W)(advance)(?:\W|$)", re.IGNORECASE)),
+
+        # On account / On A/C (case-insensitive, allowing for variants)
+        ("on_account",
+         re.compile(r"\bon\s+a\s*/\s*c\b", re.IGNORECASE)),
+
+        ("on_account",
+         re.compile(r"\bon\s+account\b", re.IGNORECASE)),
+
+        # FIFO instruction
+        ("fifo_instruction",
+         re.compile(r"(?:please\s+)?book\s+on\s+fifo|fifo\s+basis", re.IGNORECASE)),
+    ]
+
+    for intent, pattern in patterns:
+        match = pattern.search(text)
+        if match:
+            # Capture the surrounding context (~50 chars on each side) for audit
+            start = max(0, match.start() - 30)
+            end = min(len(text), match.end() + 30)
+            raw_remark = text[start:end].strip()
+            return intent, raw_remark
+
+    return None, None

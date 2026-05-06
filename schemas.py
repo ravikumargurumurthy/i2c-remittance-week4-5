@@ -8,9 +8,14 @@ distinct email kinds observed:
 - partial_booking: customer named but no invoice allocation (FIFO instructions)
 - on_account_only: bank credit + account reference, no customer name
 - non_remittance: not a payment notification (vendor invoice requests, etc.)
+- needs_attachment_parsing: body lacks tables but attachments exist (deferred)
 
 And the six payment modes observed across samples:
 NEFT, RTGS, IMPS, UPI, IFT, OTHER.
+
+PaymentIntent enum captures special instructions on remittances that
+override default invoice-matching behavior (Advance Payment, Security
+Deposit, On Account, FIFO instruction).
 """
 
 from datetime import date, datetime
@@ -52,6 +57,30 @@ class PaymentMode(str, Enum):
     UPI = "UPI"       # Unified Payments Interface
     IFT = "IFT"       # Internal Funds Transfer / cheque-via-bank
     OTHER = "OTHER"   # truncated / non-standard / unrecognized
+
+
+class PaymentIntent(str, Enum):
+    """Special instructions about how the payment should be applied.
+
+    Detected from remarks in the email body. When present, these override
+    or modify the default invoice-matching behavior. The matching agent
+    (Project 2) reads this field to decide which application workflow runs:
+
+    - INVOICE_PAYMENT (default): apply against open invoices normally
+    - ADVANCE: customer paying ahead; do not match to existing invoices,
+      park as advance receipt
+    - SECURITY_DEPOSIT: refundable deposit, separate ledger from AR
+    - ON_ACCOUNT: apply to customer account, defer invoice selection
+    - FIFO_INSTRUCTION: apply to oldest invoices first
+    - OTHER_SPECIAL: remark detected but doesn't fit known categories;
+      HITL review recommended
+    """
+    INVOICE_PAYMENT = "invoice_payment"      # default — normal AR application
+    ADVANCE = "advance"                       # advance / advance payment
+    SECURITY_DEPOSIT = "security_deposit"     # security deposit
+    ON_ACCOUNT = "on_account"                 # on account / on a/c
+    FIFO_INSTRUCTION = "fifo_instruction"     # 'Please book on FIFO basis'
+    OTHER_SPECIAL = "other_special"           # remark exists but doesn't match known
 
 
 # ============================================================
@@ -149,6 +178,11 @@ class RemittanceExtraction(BaseModel):
     - partial_booking: bank_credits populated, allocations empty, customer_ref set
     - on_account_only: bank_credits populated, allocations empty, customer_ref set
     - non_remittance:  both empty, agent explains in extraction_notes
+    - needs_attachment_parsing: deferred; agent waits for attachment processing
+
+    Payment intent (advance, on_account, etc.) is detected separately and
+    can override default invoice-matching behavior in the downstream
+    matching agent.
     """
     # Email metadata (echoed from input for audit trail)
     message_id: str
@@ -158,6 +192,26 @@ class RemittanceExtraction(BaseModel):
 
     # Triage result
     email_kind: EmailKind
+
+    # Payment intent — detected from remarks
+    payment_intent: PaymentIntent = Field(
+        default=PaymentIntent.INVOICE_PAYMENT,
+        description=(
+            "Special instruction overriding default invoice-matching behavior. "
+            "When not INVOICE_PAYMENT, downstream matching agent applies the "
+            "appropriate alternative workflow (advance receipt, security deposit "
+            "ledger, on-account application, FIFO matching, or HITL review)."
+        ),
+    )
+    intent_remarks_raw: Optional[str] = Field(
+        default=None,
+        description=(
+            "Raw remark text as it appeared in the email, preserved for audit. "
+            "E.g., 'Advance Payment for January', 'Please book on FIFO basis', "
+            "'On A/C - 4000000321'. Approximately 60 characters of context "
+            "around the matched phrase."
+        ),
+    )
 
     # Extracted data
     bank_credits: list[BankCreditLine] = Field(default_factory=list)
@@ -175,7 +229,8 @@ class RemittanceExtraction(BaseModel):
         None,
         description=(
             "total_bank_credits - total_net_allocated. Zero means clean match. "
-            "Non-zero indicates 'access payment' (overpayment) or partial allocation."
+            "Non-zero indicates 'access payment' (overpayment) or partial "
+            "allocation. Not applicable when payment_intent != INVOICE_PAYMENT."
         ),
     )
 
@@ -184,7 +239,8 @@ class RemittanceExtraction(BaseModel):
     extraction_notes: Optional[str] = None
 
     @field_validator("sender_email", "subject", "customer_reference",
-                     "customer_name", "extraction_notes", mode="before")
+                     "customer_name", "extraction_notes", "intent_remarks_raw",
+                     mode="before")
     @classmethod
     def _empty_str_to_none(cls, v):
         return _empty_to_none(v)

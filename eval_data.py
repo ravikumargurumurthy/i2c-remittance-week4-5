@@ -46,6 +46,9 @@ EVAL_SET = [
         "expected": {
             "email_kind": "on_account_only",
         },
+        "expected_signals": {
+        "payment_intent": "on_account",   # ← new
+    },
     },
     {
         "id": "ev_06_vinayak_partial_booking",
@@ -54,6 +57,9 @@ EVAL_SET = [
         "expected": {
             "email_kind": "partial_booking",
         },
+        "expected_signals": {
+        "payment_intent": "fifo_instruction",   # ← new
+    },
     },
     {
         "id": "ev_07_jboda_full_booking",
@@ -86,6 +92,9 @@ EVAL_SET = [
         "expected": {
             "email_kind": "on_account_only",
         },
+        "expected_signals": {
+        "payment_intent": "on_account",   # ← new
+    },
     },
 ]
 

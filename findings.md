@@ -83,3 +83,35 @@ Discipline: smoke-test against real data BEFORE writing the agent layer.
 Day 0's smoke test (just printing table counts) found this issue while
 fixing it required only "use the first table, ignore later duplicates."
 Discovering the same issue mid-Day-3 would have wasted hours.
+
+## Day 1.5 — Payment intent: hybrid detection plan
+
+Day 1.5 implements rule-based detection only (regex for known patterns).
+This catches the dominant cases observed in the 10 samples:
+- Advance / Advance Payment
+- Security Deposit
+- On Account / On A/C
+- FIFO basis instructions
+
+### Deferred to Day 4: LLM fallback for unusual remarks
+
+When Day 4 adds the reconciliation/edge-case node (which has LLM tool
+calls anyway), an additional check runs:
+
+  IF detected_signals['payment_intent'] is None
+    AND extraction has unexplained discrepancies (e.g., reconciliation
+        diff non-zero, or extraction_notes mentions ambiguity):
+    THEN ask the LLM to look at the body and identify any payment
+         instruction that the rules missed. Result populates
+         payment_intent (most likely OTHER_SPECIAL) and intent_remarks_raw.
+
+This hybrid pattern (rules first, LLM as backstop) is the right shape:
+- Rules handle known cases deterministically and cheaply
+- LLM handles the long tail when other signals already say "something
+  is unusual"
+- We never pay for LLM calls when rules handle the case correctly
+
+### Why not LLM-first
+LLM-first would make every email a 2-second LLM call to extract a
+remark that's missing in 7/10 samples. Rules handle the 70%+ baseline
+case for free.
