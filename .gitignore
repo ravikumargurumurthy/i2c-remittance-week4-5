@@ -1,0 +1,18 @@
+# Environment
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+.DS_Store
+
+# CRITICAL: real client data must never be committed
+data/sample_emails_REAL/
+data/sample_emails_REAL_*/
+data/*_REAL/
+*.eml
+real_email_*.json
+*_real_sample*.json
+
+# Trace outputs (carried over from Week 3 pattern)
+traces/
