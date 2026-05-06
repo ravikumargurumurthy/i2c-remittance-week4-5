@@ -4,11 +4,19 @@ Pytest harness for the remittance extraction agent.
 
 Day 1 assertions: email_kind, payment_intent (when expected)
 Day 2 assertions: bank_credits count + per-row field checks
+Day 3 assertions: invoice_allocations count + per-row exact values
 
-Multi-run methodology: each case can run N times via EVAL_RUNS env var.
+Multi-run methodology: each case runs N times via EVAL_RUNS env var.
+Day 3 default: PASS_THRESHOLD=5 (stricter than Day 2 because financial
+precision matters more for downstream reconciliation).
+
+Usage:
+    pytest test_agent.py -v -s
+    EVAL_RUNS=5 PASS_THRESHOLD=5 pytest test_agent.py -v -s
 """
 
 import os
+import re
 from decimal import Decimal
 
 import pytest
@@ -22,6 +30,10 @@ from eval_data import EVAL_SET
 EVAL_RUNS = int(os.getenv("EVAL_RUNS", "1"))
 PASS_THRESHOLD = int(os.getenv("PASS_THRESHOLD", str(max(1, EVAL_RUNS))))
 
+
+# ============================================================
+# Per-run validation
+# ============================================================
 
 def _check_one_run(case, result):
     """Validate one run against expected. Returns (passed, reason)."""
@@ -41,7 +53,7 @@ def _check_one_run(case, result):
             f"expected {expected['email_kind']!r}"
         )
 
-    # ---- payment_intent (optional, only checked when expected_signals present) ----
+    # ---- payment_intent (optional) ----
     expected_signals = case.get("expected_signals", {})
     for signal_name, signal_value in expected_signals.items():
         actual = triage.detected_signals.get(signal_name)
@@ -54,12 +66,27 @@ def _check_one_run(case, result):
     # ---- bank_credits ----
     expected_credits = case.get("expected_bank_credits", {})
     if expected_credits:
-        passed, reason = _check_bank_credits(result["bank_credits"], expected_credits)
+        passed, reason = _check_bank_credits(
+            result["bank_credits"], expected_credits
+        )
+        if not passed:
+            return False, reason
+
+    # ---- invoice_allocations (Day 3) ----
+    expected_allocs = case.get("expected_allocations", {})
+    if expected_allocs:
+        passed, reason = _check_allocations(
+            result["invoice_allocations"], expected_allocs
+        )
         if not passed:
             return False, reason
 
     return True, None
 
+
+# ============================================================
+# Bank credit assertions (Day 2)
+# ============================================================
 
 def _check_bank_credits(actual_credits, expected: dict) -> tuple[bool, str | None]:
     """Validate bank credits against expected count + per-row checks."""
@@ -72,7 +99,7 @@ def _check_bank_credits(actual_credits, expected: dict) -> tuple[bool, str | Non
 
     expected_rows = expected.get("rows", [])
     if not expected_rows:
-        return True, None  # count check was sufficient
+        return True, None
 
     if len(actual_credits) < len(expected_rows):
         return False, (
@@ -80,14 +107,11 @@ def _check_bank_credits(actual_credits, expected: dict) -> tuple[bool, str | Non
             f"got only {len(actual_credits)} bank credits"
         )
 
-    # For multi-row tables (like email 09 with 3 NEFT credits), order doesn't
-    # strictly matter — check that for each expected row, AT LEAST ONE actual
-    # row matches. Use a simple greedy match.
-    unmatched_actual = list(actual_credits)
+    unmatched = list(actual_credits)
     for expected_row in expected_rows:
         match_idx = None
-        for i, actual in enumerate(unmatched_actual):
-            if _row_matches(actual, expected_row):
+        for i, actual in enumerate(unmatched):
+            if _credit_row_matches(actual, expected_row):
                 match_idx = i
                 break
 
@@ -96,14 +120,13 @@ def _check_bank_credits(actual_credits, expected: dict) -> tuple[bool, str | Non
                 f"No bank credit matches expected row {expected_row}. "
                 f"Got: {[_credit_summary(c) for c in actual_credits]}"
             )
-        unmatched_actual.pop(match_idx)
+        unmatched.pop(match_idx)
 
     return True, None
 
 
-def _row_matches(actual, expected: dict) -> bool:
-    """Check if one actual BankCreditLine matches an expected dict."""
-    # payment_mode (exact OR _in set)
+def _credit_row_matches(actual, expected: dict) -> bool:
+    """Check if one BankCreditLine matches an expected dict."""
     if "payment_mode" in expected:
         if not actual.payment_mode or actual.payment_mode.value != expected["payment_mode"]:
             return False
@@ -111,7 +134,6 @@ def _row_matches(actual, expected: dict) -> bool:
         if not actual.payment_mode or actual.payment_mode.value not in expected["payment_mode_in"]:
             return False
 
-    # bank_utr (exact OR existence check)
     if "bank_utr" in expected:
         if actual.bank_utr != expected["bank_utr"]:
             return False
@@ -119,26 +141,174 @@ def _row_matches(actual, expected: dict) -> bool:
         if not actual.bank_utr:
             return False
 
-    # payer_name_contains (substring check)
     if "payer_name_contains" in expected:
         actual_name = (actual.payer_name_in_narrative or "").upper()
         if expected["payer_name_contains"].upper() not in actual_name:
             return False
 
-    # amount (exact match to 2 decimal places)
     if "amount" in expected:
-        expected_amount = Decimal(expected["amount"])
-        if actual.amount != expected_amount:
+        if actual.amount != Decimal(expected["amount"]):
             return False
 
     return True
 
 
 def _credit_summary(credit) -> str:
-    """Short summary of a BankCreditLine for error messages."""
     return (
         f"{credit.payment_mode}/{credit.bank_utr}/"
         f"{(credit.payer_name_in_narrative or '?')[:20]}/{credit.amount}"
+    )
+
+
+# ============================================================
+# Allocation assertions (Day 3) — new
+# ============================================================
+
+def _check_allocations(actual_allocs, expected: dict) -> tuple[bool, str | None]:
+    """Validate invoice allocations against expected."""
+    # Count check
+    expected_count = expected.get("count")
+    if expected_count is not None and len(actual_allocs) != expected_count:
+        return False, (
+            f"allocations count: got {len(actual_allocs)}, "
+            f"expected {expected_count}"
+        )
+
+    # Negative-amount preservation check (for ev_02 MOANA)
+    if expected.get("expect_negative_amounts"):
+        has_negative = any(
+            (a.gross_amount and a.gross_amount < 0)
+            or (a.net_amount and a.net_amount < 0)
+            for a in actual_allocs
+        )
+        if not has_negative:
+            return False, (
+                "Expected at least one allocation with negative amount "
+                "(credit memo / adjustment), but found none. "
+                "LLM may have stripped the sign."
+            )
+
+    # Aggregate property checks
+    if expected.get("all_rows_have_doc_type_none"):
+        bad = [a for a in actual_allocs if a.document_type is not None]
+        if bad:
+            return False, (
+                f"Expected document_type None on all rows (column absent in template), "
+                f"but {len(bad)} rows had it set: "
+                f"{[a.document_type for a in bad]}"
+            )
+
+    if expected.get("all_rows_have_tds_none"):
+        bad = [a for a in actual_allocs if a.tds_amount is not None]
+        if bad:
+            return False, (
+                f"Expected tds_amount None on all rows (column absent in template), "
+                f"but {len(bad)} rows had it set: "
+                f"{[str(a.tds_amount) for a in bad]}"
+            )
+
+    if expected.get("all_rows_have_net_none"):
+        bad = [a for a in actual_allocs if a.net_amount is not None]
+        if bad:
+            return False, (
+                f"Expected net_amount None on all rows (column absent in template), "
+                f"but {len(bad)} rows had it set: "
+                f"{[str(a.net_amount) for a in bad]}"
+            )
+
+    if expected.get("all_rows_have_customer_reference_set"):
+        bad = [a for a in actual_allocs if not a.customer_reference]
+        if bad:
+            return False, f"Expected customer_reference on all rows; {len(bad)} missing"
+
+    if expected.get("all_rows_have_invoice_number_set"):
+        bad = [a for a in actual_allocs if not a.invoice_number]
+        if bad:
+            return False, f"Expected invoice_number on all rows; {len(bad)} missing"
+
+    if expected.get("all_rows_have_doc_type_set"):
+        bad = [a for a in actual_allocs if not a.document_type]
+        if bad:
+            return False, f"Expected document_type on all rows; {len(bad)} missing"
+
+    # Per-row checks
+    expected_rows = expected.get("rows", [])
+    if not expected_rows:
+        return True, None
+
+    if len(actual_allocs) < len(expected_rows):
+        return False, (
+            f"Expected {len(expected_rows)} rows of details, "
+            f"got only {len(actual_allocs)} allocations"
+        )
+
+    # Greedy match: for each expected row, find a matching actual row
+    unmatched = list(actual_allocs)
+    for expected_row in expected_rows:
+        match_idx = None
+        for i, actual in enumerate(unmatched):
+            if _alloc_row_matches(actual, expected_row):
+                match_idx = i
+                break
+
+        if match_idx is None:
+            return False, (
+                f"No allocation matches expected row {expected_row}. "
+                f"Got: {[_alloc_summary(a) for a in actual_allocs]}"
+            )
+        unmatched.pop(match_idx)
+
+    return True, None
+
+
+def _alloc_row_matches(actual, expected: dict) -> bool:
+    """Check if one InvoiceAllocation matches an expected dict."""
+    if "customer_reference" in expected:
+        if actual.customer_reference != expected["customer_reference"]:
+            return False
+    elif "customer_reference_pattern" in expected:
+        if not actual.customer_reference:
+            return False
+        if not re.match(expected["customer_reference_pattern"], actual.customer_reference):
+            return False
+
+    if "invoice_number" in expected:
+        if actual.invoice_number != expected["invoice_number"]:
+            return False
+
+    if "document_type" in expected:
+        if actual.document_type != expected["document_type"]:
+            return False
+    elif expected.get("document_type_is_none"):
+        if actual.document_type is not None:
+            return False
+
+    if "gross_amount" in expected:
+        if actual.gross_amount != Decimal(expected["gross_amount"]):
+            return False
+
+    if "tds_amount" in expected:
+        if actual.tds_amount != Decimal(expected["tds_amount"]):
+            return False
+    elif expected.get("tds_amount_is_none"):
+        if actual.tds_amount is not None:
+            return False
+
+    if "net_amount" in expected:
+        if actual.net_amount != Decimal(expected["net_amount"]):
+            return False
+    elif expected.get("net_amount_is_none"):
+        if actual.net_amount is not None:
+            return False
+
+    return True
+
+
+def _alloc_summary(alloc) -> str:
+    return (
+        f"{alloc.customer_reference}/{alloc.invoice_number}/"
+        f"{alloc.document_type}/{alloc.gross_amount}/"
+        f"tds={alloc.tds_amount}/net={alloc.net_amount}"
     )
 
 
@@ -172,6 +342,7 @@ def test_extraction(case):
             "reason": reason,
             "kind": result.get("triage").email_kind.value if result.get("triage") else None,
             "credits_count": len(result.get("bank_credits") or []),
+            "allocs_count": len(result.get("invoice_allocations") or []),
         })
 
     pass_count = sum(1 for r in runs if r["passed"])
@@ -179,7 +350,8 @@ def test_extraction(case):
     for r in runs:
         status = "✓" if r["passed"] else "✗"
         if r["passed"]:
-            print(f"  {status} run {r['run']}: kind={r['kind']} credits={r['credits_count']}")
+            print(f"  {status} run {r['run']}: kind={r['kind']} "
+                  f"credits={r['credits_count']} allocs={r['allocs_count']}")
         else:
             print(f"  {status} run {r['run']}: {r['reason']}")
 

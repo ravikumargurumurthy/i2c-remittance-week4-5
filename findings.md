@@ -236,3 +236,94 @@ reveals the bug.
 4. Speculative fallbacks are not free — they add complexity that can
    cause bugs while solving for problems that don't exist. Real data
    drives the schema; ask the domain expert when in doubt.
+
+
+## Day 3 — LLM-based invoice allocation extraction
+
+10/10 evals passing (6 full_booking + 4 non-allocation), 5/5 multi-run
+threshold. Allocations span 6 distinct column-name conventions across the
+samples — same logical fields, six different naming variants, three
+optional columns (Doc Type, TDS, Net Amount).
+
+### Why batched (one LLM call per table)
+Day 2 used per-row LLM calls because narrative parsing is per-row work.
+Day 3 used batched (one call per table) because column-name reasoning is
+per-table work that shouldn't be repeated for every row. Batching is
+cheaper and produces more internally-consistent extractions.
+
+### What the LLM handles that rules can't
+- 6 column-name conventions for customer ID alone (Customer/Cust.No/
+  Co Code/Customer Code/Code/Company Code)
+- 4 column-name conventions for amount (Amount/Amt/Invoice Amt/Invoice
+  Amount)
+- Doc Type column sometimes present (RV/DZ/AB/SA), sometimes absent
+- TDS column sometimes present, sometimes absent
+- Net Amount column sometimes present, sometimes absent
+- Negative amounts (credit memos) where the sign matters for
+  reconciliation
+
+Hardcoded mapping would have worked for today's 6 templates. Tomorrow's
+7th template (with header "Cust ID" and an "Amt Due" column we haven't
+seen) would have required code changes. The LLM handles unseen variants
+by reasoning about meaning.
+
+### Eval design — financial precision matters
+Day 3 evals are stricter than Day 2: sign preservation, null vs zero
+distinction, exact decimal matching for all financial fields. Wrong
+amounts at this stage = wrong matches at the next stage = wrong GL
+postings. The strictness is justified by what's downstream.
+
+### Generalizable patterns
+
+1. Per-row vs per-table extraction is a design choice driven by where
+   the per-call reasoning lives. Narrative parsing: per-row. Column
+   mapping: per-table. The "right" answer depends on the work being done.
+
+2. Eval strictness should match the stakes of the downstream consumer.
+   Triage evals are coarse (4 enum values). Bank credit evals are
+   medium (existence checks plus exact amounts). Allocation evals are
+   strict (exact decimals, sign preservation, null/None handling).
+   Calibrate the bar to what wrong answers actually cost.
+
+3. "Absent column means null, not zero" is a domain-critical distinction
+   that's invisible from data shape alone. Schema, prompt, and evals all
+   need to encode it explicitly. Easy to get wrong without thinking
+   carefully about what each value MEANS in context.
+
+## Day 3 — Multi-run reveals what single-run hides
+
+Single-run pytest passed 10/10 after eval fixes. Multi-run with 5 runs
+revealed two cases that only single-run had passed by luck:
+
+### ev_03 (MPSEZ) — 0/5 stable failure
+Eval expected old assumed values; my Day 3 plan provided diagnostic to
+get real data but eval_data.py wasn't updated with the corrected values.
+Single-run had also failed; this just confirms.
+
+Lesson: Multi-run isn't useful for catching deterministic eval bugs —
+it just runs the bug N times. Multi-run IS useful for catching LLM
+variance.
+
+### ev_02 (MOANA) — 3/5 flaky failure  
+LLM included summary footer rows ("Total", "Payment Received",
+"Access Payment") about 40% of runs. Single-run smoke test had
+captured a clean run; multi-run revealed the real reliability.
+
+Fixed with two-layer defense:
+1. Deterministic: filter rows where customer column is empty in
+   find_allocation_table BEFORE the LLM sees them
+2. Prompt: explicit instruction to skip summary rows
+
+The deterministic layer is the primary fix. Prompt instruction is
+defense in depth for future templates with non-empty-customer footers.
+
+### Generalizable lesson on multi-run
+The LLM's mode behavior is "do the right thing." But the LLM's
+distribution of behavior is "do the right thing 60-95% of the time
+and confidently do something else 5-40% of the time." Single-run
+captures the mode. Multi-run captures the distribution. Production
+agents need to be evaluated on the distribution, not the mode.
+
+This is why production targets like "5/5 multi-run" exist — they
+shift the conversation from "did it work once?" to "does it work
+reliably?"

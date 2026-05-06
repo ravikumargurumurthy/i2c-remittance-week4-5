@@ -241,6 +241,29 @@ def find_allocation_table(html: str) -> dict | None:
         has_amount = any(k in header_text for k in amount_keywords)
 
         if has_customer and has_invoice and has_amount:
+            # Filter out summary/footer rows where the customer column is empty.
+            # Real allocation rows always have a customer identifier; rows like
+            # "Total", "Payment Received", "Access Payment" have empty customer
+            # column and shouldn't be passed to the LLM as allocations.
+            customer_idx = None
+            for i, h in enumerate(tbl["header_row"]):
+                h_lower = h.lower()
+                if any(k in h_lower for k in customer_keywords):
+                    customer_idx = i
+                    break
+
+            if customer_idx is not None:
+                filtered_data_rows = [
+                    row for row in tbl["data_rows"]
+                    if customer_idx < len(row)
+                    and row[customer_idx]
+                    and row[customer_idx].strip()
+                ]
+                # Update the table dict with filtered rows
+                tbl = dict(tbl)  # don't mutate the original
+                tbl["data_rows"] = filtered_data_rows
+                tbl["row_count"] = len(filtered_data_rows) + 1  # +1 for header
+
             return tbl
 
     return None

@@ -1,9 +1,10 @@
 # eval_data.py
 """
-Eval cases for Project 1 — extended for Day 2 bank credit extraction.
+Eval cases for Project 1 — extended for Day 3 invoice allocation extraction.
 
 Day 1 assertions: email_kind, optionally detected_signals.payment_intent
 Day 2 assertions: bank_credits (count, payment_mode, key fields)
+Day 3 assertions: invoice_allocations (count + per-row exact values)
 """
 
 EVAL_SET = [
@@ -25,10 +26,31 @@ EVAL_SET = [
                 },
             ],
         },
+        "expected_allocations": {
+            "count": 2,
+            "rows": [
+                {
+                    "customer_reference": "761",
+                    "invoice_number": "192400005397",
+                    "document_type": "RV",
+                    "gross_amount": "18644.00",
+                    "tds_amount": "1580.00",
+                    "net_amount": "17064.00",
+                },
+                {
+                    "customer_reference": "761",
+                    "invoice_number": "192400005398",
+                    "document_type": "RV",
+                    "gross_amount": "1699.00",
+                    "tds_amount_is_none": True,
+                    "net_amount": "1699.00",
+                },
+            ],
+        },
     },
     {
         "id": "ev_02_moana_full_booking",
-        "description": "MOANA IMPEX — 5-row allocation with mixed RV/AB/SA doc types",
+        "description": "MOANA IMPEX — 5-row allocation with negative amounts (AB/SA doc types)",
         "filename_keyword": "email_02_payment_booking_mahek_20251229_1047",
         "expected": {
             "email_kind": "full_booking",
@@ -44,10 +66,56 @@ EVAL_SET = [
                 },
             ],
         },
+        "expected_allocations": {
+        "count": 5,
+        "expect_negative_amounts": True,
+        "rows": [
+            {
+                "customer_reference": "16736",
+                "invoice_number": "692400000256",
+                "document_type": "AB",
+                "gross_amount": "-6475.00",
+                "tds_amount": "-647.50",
+                "net_amount": "-5827.50",
+            },
+            {
+                "customer_reference": "16736",
+                "invoice_number": "192400004511",
+                "document_type": "RV",
+                "gross_amount": "72000.00",
+                "tds_amount": "7200.00",
+                "net_amount": "64800.00",
+            },
+            {
+                "customer_reference": "16736",
+                "invoice_number": "192400004812",
+                "document_type": "RV",
+                "gross_amount": "72000.00",
+                "tds_amount": "7200.00",
+                "net_amount": "64800.00",
+            },
+            {
+                "customer_reference": "16736",
+                "invoice_number": "192400005149",
+                "document_type": "RV",
+                "gross_amount": "72000.00",
+                "tds_amount": "7200.00",
+                "net_amount": "64800.00",
+            },
+            {
+                "customer_reference": "16736",
+                "invoice_number": "2024-2025",  # SA fiscal year reference
+                "document_type": "SA",
+                "gross_amount": "-7198.00",
+                "tds_amount": "0.00",
+                "net_amount": "-7198.00",
+            },
+        ],
+    },
     },
     {
         "id": "ev_03_mpsez_full_booking_ift",
-        "description": "MPSEZ Utilities — IFT/cheque-style narrative",
+        "description": "MPSEZ Utilities — IFT format, 1-row allocation",
         "filename_keyword": "email_03_payment_booking_mahek_20251229_0429",
         "expected": {
             "email_kind": "full_booking",
@@ -57,8 +125,21 @@ EVAL_SET = [
             "rows": [
                 {
                     "payment_mode": "IFT",
-                    "bank_utr_is_set": True,  # exact UTR varies; just verify present
+                    "bank_utr_is_set": True,
                     "amount": "122699.00",
+                },
+            ],
+        },
+        "expected_allocations": {
+            "count": 1,
+            "rows": [
+                {
+                    "customer_reference": "8000000497",
+                    "invoice_number": "192400000120",
+                    "document_type": "RV",
+                    "gross_amount": "136333",
+                    "tds_amount": "13633.3",
+                    "net_amount": "122699.7",
                 },
             ],
         },
@@ -73,10 +154,13 @@ EVAL_SET = [
         "expected_bank_credits": {
             "count": 0,
         },
+        "expected_allocations": {
+            "count": 0,
+        },
     },
     {
         "id": "ev_05_on_account_4000000321",
-        "description": "On A/C – 4000000321 — bank credit only",
+        "description": "On A/C – 4000000321 — bank credit only, no allocations",
         "filename_keyword": "email_05_payment_booking_mahek_20251223_1444",
         "expected": {
             "email_kind": "on_account_only",
@@ -94,10 +178,13 @@ EVAL_SET = [
                 },
             ],
         },
+        "expected_allocations": {
+            "count": 0,
+        },
     },
     {
         "id": "ev_06_vinayak_partial_booking",
-        "description": "VINAYAK FOOD ZONE — UPI payment, FIFO instruction",
+        "description": "VINAYAK FOOD ZONE — UPI payment, FIFO instruction, no allocations",
         "filename_keyword": "email_06_vinayak_ledger_mahek",
         "expected": {
             "email_kind": "partial_booking",
@@ -114,10 +201,13 @@ EVAL_SET = [
                 },
             ],
         },
+        "expected_allocations": {
+            "count": 0,
+        },
     },
     {
         "id": "ev_07_jboda_full_booking",
-        "description": "J B BODA — 4-row allocation with NO TDS column",
+        "description": "J B BODA — 4-row allocation with NO TDS or Net Amount columns",
         "filename_keyword": "email_07_payment_booking_mahek_20251209",
         "expected": {
             "email_kind": "full_booking",
@@ -133,10 +223,16 @@ EVAL_SET = [
                 },
             ],
         },
+        "expected_allocations": {
+            "count": 4,
+            "all_rows_have_doc_type_none": True,  # Doc Type column absent
+            "all_rows_have_tds_none": True,        # TDS column absent
+            "all_rows_have_net_none": True,        # Net Amount column absent
+        },
     },
     {
         "id": "ev_08_saurashtra_full_booking",
-        "description": "SAURASHTRA FREIGHT — non-standard narrative, single allocation",
+        "description": "SAURASHTRA FREIGHT — non-standard narrative, 1-row allocation",
         "filename_keyword": "email_08_payment_details_790038",
         "expected": {
             "email_kind": "full_booking",
@@ -145,17 +241,27 @@ EVAL_SET = [
             "count": 1,
             "rows": [
                 {
-                    # Non-standard format — payment_mode could be NEFT or OTHER;
-                    # accept either via _in
                     "payment_mode_in": ["NEFT", "OTHER"],
                     "amount": "790038.00",
+                },
+            ],
+        },
+        "expected_allocations": {
+            "count": 1,
+            "rows": [
+                {
+                    "customer_reference": "5357",
+                    "invoice_number": "192400004327",
+                    "gross_amount": "863190.00",     # ← changed
+                    "tds_amount": "73152.00",         # ← added
+                    "net_amount": "790038.00",        # ← added (this was the bank credit)
                 },
             ],
         },
     },
     {
         "id": "ev_09_yesbank_full_booking_n_to_n",
-        "description": "YES BANK — 3 bank credits (N→N cardinality)",
+        "description": "YES BANK — 3 bank credits + 3 invoices (N→N cardinality)",
         "filename_keyword": "email_09_payment_advice_apsez",
         "expected": {
             "email_kind": "full_booking",
@@ -163,16 +269,21 @@ EVAL_SET = [
         "expected_bank_credits": {
             "count": 3,
             "rows": [
-                # Each row should be NEFT, payer related to YES BANK, amount 12192
                 {"payment_mode": "NEFT", "amount": "12192.00"},
                 {"payment_mode": "NEFT", "amount": "12192.00"},
                 {"payment_mode": "NEFT", "amount": "12192.00"},
             ],
         },
+        "expected_allocations": {
+            "count": 3,
+            "all_rows_have_customer_reference_set": True,
+            "all_rows_have_invoice_number_set": True,
+            "all_rows_have_doc_type_set": True,  # YES BANK template has Doc Type column
+        },
     },
     {
         "id": "ev_10_indus_on_account",
-        "description": "INDUS TOWERS On A/C – 13139",
+        "description": "INDUS TOWERS On A/C – 13139 — no allocations",
         "filename_keyword": "email_10_payment_booking_mahek_20251227",
         "expected": {
             "email_kind": "on_account_only",
@@ -190,6 +301,9 @@ EVAL_SET = [
                     "amount": "7840.80",
                 },
             ],
+        },
+        "expected_allocations": {
+            "count": 0,
         },
     },
 ]
