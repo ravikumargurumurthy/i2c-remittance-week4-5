@@ -115,3 +115,39 @@ This hybrid pattern (rules first, LLM as backstop) is the right shape:
 LLM-first would make every email a 2-second LLM call to extract a
 remark that's missing in 7/10 samples. Rules handle the 70%+ baseline
 case for free.
+
+## Day 2 — LLM-based bank credit extraction
+
+Built `extract_bank_credit.py` with a single LLM call per row. The function
+takes a row from the bank credit table (located deterministically by Day 1's
+helpers) and parses the narrative into BankCreditLine fields.
+
+### Why LLM here
+Six payment modes observed (NEFT, RTGS, IMPS, UPI, IFT, OTHER) with
+significant format variation:
+- NEFT/RTGS/IMPS: slash-delimited UTR/payer/bank
+- UPI: P2A/<ref>/<payer>/<bank-handle>/<purpose>
+- IFT: cheque-document references, different separators
+- One sample (email 08): no slash structure at all
+
+Rule-based regex would handle ~70% (clean NEFT) but break on the long tail.
+LLM reasons about format rather than pattern-matching.
+
+### Architectural boundaries respected
+- Date and amount parsing remain deterministic (parse_indian_date, parse_amount)
+- Table location remains deterministic (Day 1's find_bank_credit_table)
+- Only narrative parsing uses LLM
+- Per-row LLM calls (not batched) — simpler, cleaner debugging
+
+### Observations on multi-run stability
+[Fill in after running EVAL_RUNS=5 — note any cases that hit 4/5 or 3/5
+and what the failure modes were. This becomes part of the portfolio
+narrative about agent reliability.]
+
+### Per-row vs batched calls
+Considered batching all rows in one LLM call (faster for email 09 with 3
+rows). Chose per-row for Day 2 because:
+- Easier to debug when one row goes wrong
+- 3 calls × 2 seconds = 6 seconds is acceptable
+- Per-row is more general — works for any number of rows
+Can revisit in Day 7 polish if performance becomes a concern.
