@@ -5,14 +5,15 @@ Pytest harness for the remittance extraction agent.
 Day 1 assertions: email_kind, payment_intent (when expected)
 Day 2 assertions: bank_credits count + per-row field checks
 Day 3 assertions: invoice_allocations count + per-row exact values
+Day 4 assertions: extraction_status, reconciliation_diff, routing, confidence
 
 Multi-run methodology: each case runs N times via EVAL_RUNS env var.
-Day 3 default: PASS_THRESHOLD=5 (stricter than Day 2 because financial
-precision matters more for downstream reconciliation).
+Default PASS_THRESHOLD = EVAL_RUNS (strict).
 
 Usage:
     pytest test_agent.py -v -s
     EVAL_RUNS=5 PASS_THRESHOLD=5 pytest test_agent.py -v -s
+    EVAL_RUNS=5 PASS_THRESHOLD=4 pytest test_agent.py -v -s   # 4/5 tolerance
 """
 
 import os
@@ -46,14 +47,14 @@ def _check_one_run(case, result):
 
     expected = case["expected"]
 
-    # ---- email_kind ----
+    # ---- Day 1: email_kind ----
     if triage.email_kind.value != expected["email_kind"]:
         return False, (
             f"email_kind: got {triage.email_kind.value!r}, "
             f"expected {expected['email_kind']!r}"
         )
 
-    # ---- payment_intent (optional) ----
+    # ---- Day 1.5: payment_intent (optional) ----
     expected_signals = case.get("expected_signals", {})
     for signal_name, signal_value in expected_signals.items():
         actual = triage.detected_signals.get(signal_name)
@@ -63,7 +64,7 @@ def _check_one_run(case, result):
                 f"expected {signal_value!r}"
             )
 
-    # ---- bank_credits ----
+    # ---- Day 2: bank_credits ----
     expected_credits = case.get("expected_bank_credits", {})
     if expected_credits:
         passed, reason = _check_bank_credits(
@@ -72,11 +73,20 @@ def _check_one_run(case, result):
         if not passed:
             return False, reason
 
-    # ---- invoice_allocations (Day 3) ----
+    # ---- Day 3: invoice_allocations ----
     expected_allocs = case.get("expected_allocations", {})
     if expected_allocs:
         passed, reason = _check_allocations(
             result["invoice_allocations"], expected_allocs
+        )
+        if not passed:
+            return False, reason
+
+    # ---- Day 4: assembled extraction ----
+    expected_assembly = case.get("expected_assembly", {})
+    if expected_assembly:
+        passed, reason = _check_assembly(
+            result.get("extraction"), expected_assembly
         )
         if not passed:
             return False, reason
@@ -107,6 +117,7 @@ def _check_bank_credits(actual_credits, expected: dict) -> tuple[bool, str | Non
             f"got only {len(actual_credits)} bank credits"
         )
 
+    # Greedy match: for each expected row, find a matching actual row
     unmatched = list(actual_credits)
     for expected_row in expected_rows:
         match_idx = None
@@ -161,7 +172,7 @@ def _credit_summary(credit) -> str:
 
 
 # ============================================================
-# Allocation assertions (Day 3) — new
+# Allocation assertions (Day 3)
 # ============================================================
 
 def _check_allocations(actual_allocs, expected: dict) -> tuple[bool, str | None]:
@@ -174,7 +185,7 @@ def _check_allocations(actual_allocs, expected: dict) -> tuple[bool, str | None]
             f"expected {expected_count}"
         )
 
-    # Negative-amount preservation check (for ev_02 MOANA)
+    # Negative-amount preservation check
     if expected.get("expect_negative_amounts"):
         has_negative = any(
             (a.gross_amount and a.gross_amount < 0)
@@ -193,8 +204,8 @@ def _check_allocations(actual_allocs, expected: dict) -> tuple[bool, str | None]
         bad = [a for a in actual_allocs if a.document_type is not None]
         if bad:
             return False, (
-                f"Expected document_type None on all rows (column absent in template), "
-                f"but {len(bad)} rows had it set: "
+                f"Expected document_type None on all rows; "
+                f"{len(bad)} rows had it set: "
                 f"{[a.document_type for a in bad]}"
             )
 
@@ -202,8 +213,8 @@ def _check_allocations(actual_allocs, expected: dict) -> tuple[bool, str | None]
         bad = [a for a in actual_allocs if a.tds_amount is not None]
         if bad:
             return False, (
-                f"Expected tds_amount None on all rows (column absent in template), "
-                f"but {len(bad)} rows had it set: "
+                f"Expected tds_amount None on all rows; "
+                f"{len(bad)} rows had it set: "
                 f"{[str(a.tds_amount) for a in bad]}"
             )
 
@@ -211,8 +222,8 @@ def _check_allocations(actual_allocs, expected: dict) -> tuple[bool, str | None]
         bad = [a for a in actual_allocs if a.net_amount is not None]
         if bad:
             return False, (
-                f"Expected net_amount None on all rows (column absent in template), "
-                f"but {len(bad)} rows had it set: "
+                f"Expected net_amount None on all rows; "
+                f"{len(bad)} rows had it set: "
                 f"{[str(a.net_amount) for a in bad]}"
             )
 
@@ -313,6 +324,63 @@ def _alloc_summary(alloc) -> str:
 
 
 # ============================================================
+# Assembly assertions (Day 4)
+# ============================================================
+
+def _check_assembly(extraction, expected: dict) -> tuple[bool, str | None]:
+    """Validate the assembled RemittanceExtraction against expected fields."""
+    if not extraction:
+        return False, "expected_assembly defined but result has no 'extraction'"
+
+    # extraction_status (exact OR _in list)
+    if "extraction_status" in expected:
+        if extraction.extraction_status.value != expected["extraction_status"]:
+            return False, (
+                f"extraction_status: got {extraction.extraction_status.value!r}, "
+                f"expected {expected['extraction_status']!r}"
+            )
+    elif "extraction_status_in" in expected:
+        if extraction.extraction_status.value not in expected["extraction_status_in"]:
+            return False, (
+                f"extraction_status: got {extraction.extraction_status.value!r}, "
+                f"expected one of {expected['extraction_status_in']!r}"
+            )
+
+    # reconciliation_diff (exact)
+    if "reconciliation_diff" in expected:
+        expected_diff = Decimal(expected["reconciliation_diff"])
+        if extraction.reconciliation_diff != expected_diff:
+            return False, (
+                f"reconciliation_diff: got {extraction.reconciliation_diff}, "
+                f"expected {expected_diff}"
+            )
+
+    # routing (exact OR _in list)
+    if "routing" in expected:
+        if extraction.routing_decision.value != expected["routing"]:
+            return False, (
+                f"routing: got {extraction.routing_decision.value!r}, "
+                f"expected {expected['routing']!r}"
+            )
+    elif "routing_in" in expected:
+        if extraction.routing_decision.value not in expected["routing_in"]:
+            return False, (
+                f"routing: got {extraction.routing_decision.value!r}, "
+                f"expected one of {expected['routing_in']!r}"
+            )
+
+    # confidence_min (lower-bound check)
+    if "confidence_min" in expected:
+        if extraction.confidence < expected["confidence_min"]:
+            return False, (
+                f"confidence: got {extraction.confidence:.3f}, "
+                f"expected >= {expected['confidence_min']}"
+            )
+
+    return True, None
+
+
+# ============================================================
 # Test harness
 # ============================================================
 
@@ -343,6 +411,21 @@ def test_extraction(case):
             "kind": result.get("triage").email_kind.value if result.get("triage") else None,
             "credits_count": len(result.get("bank_credits") or []),
             "allocs_count": len(result.get("invoice_allocations") or []),
+            "status": (
+                result.get("extraction").extraction_status.value
+                if result.get("extraction")
+                else None
+            ),
+            "routing": (
+                result.get("extraction").routing_decision.value
+                if result.get("extraction")
+                else None
+            ),
+            "confidence": (
+                f"{result.get('extraction').confidence:.3f}"
+                if result.get("extraction")
+                else None
+            ),
         })
 
     pass_count = sum(1 for r in runs if r["passed"])
@@ -350,8 +433,12 @@ def test_extraction(case):
     for r in runs:
         status = "✓" if r["passed"] else "✗"
         if r["passed"]:
-            print(f"  {status} run {r['run']}: kind={r['kind']} "
-                  f"credits={r['credits_count']} allocs={r['allocs_count']}")
+            print(
+                f"  {status} run {r['run']}: kind={r['kind']} "
+                f"credits={r['credits_count']} allocs={r['allocs_count']} "
+                f"recon_status={r['status']} routing={r['routing']} "
+                f"conf={r['confidence']}"
+            )
         else:
             print(f"  {status} run {r['run']}: {r['reason']}")
 

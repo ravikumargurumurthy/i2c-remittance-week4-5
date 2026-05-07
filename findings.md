@@ -327,3 +327,53 @@ agents need to be evaluated on the distribution, not the mode.
 This is why production targets like "5/5 multi-run" exist — they
 shift the conversation from "did it work once?" to "does it work
 reliably?"
+
+## Day 4 — Reconciliation, confidence, routing, assembly
+
+The agent now produces a complete RemittanceExtraction per email. Five
+nodes, three modules added (reconcile.py, confidence.py, assemble.py).
+
+### Email-internal reconciliation
+Computes total_bank_credits, total_net_allocated, and reconciliation_diff.
+Classifies into ExtractionStatus:
+- CLEAN: diff is zero
+- ROUNDING_DIFF: small diff (<1 INR per row); source-data artifact
+- ACCESS_PAYMENT: bank credit > allocations; customer overpaid
+- ALLOCATION_EXCEEDS_PAYMENT: claims more than was paid
+- NOT_APPLICABLE: partial_booking / on_account_only have no allocations
+- NOT_REMITTANCE / DEFERRED: skip cases
+
+This is NOT cross-source matching — it's verifying the email's own
+arithmetic. Cross-source matching against open ledger and bank statements
+is Project 2's deliverable.
+
+The MOANA case validates against ground truth: email's "Access Payment"
+footer of 719.80 matches our computed reconciliation_diff exactly.
+
+### Confidence formula (rule-based)
+Weights: bank_credit 0.30, allocation 0.30, reconciliation 0.25, intent 0.15.
+No LLM call in confidence — formula is testable, explainable, stable
+across LLM variance. Score drives RoutingDecision (auto_apply / hitl_review
+/ exception) using the same thresholds as Week 3's bank importer.
+
+### Why NOT_APPLICABLE is its own status
+partial_booking and on_account_only legitimately don't have allocations.
+Treating them as "reconciliation failure" would route them to exception
+incorrectly. NOT_APPLICABLE is the clean signal that downstream agents
+should handle differently — apply to customer account, defer invoice
+selection, etc.
+
+### Generalizable patterns
+
+1. The "reconciliation status" enum captures domain meaning, not just
+   whether arithmetic matches. clean, rounding_diff, access_payment, and
+   allocation_exceeds_payment are operationally distinct outcomes that
+   trigger different downstream workflows.
+
+2. Domain experts encode validation oracles in their data. Mahek's
+   "Access Payment 719.80" footer is operational documentation; for the
+   agent it's a free correctness check on our reconciliation arithmetic.
+
+3. Confidence scoring should be rule-based when inputs are structured
+   fields. LLM calls add variance; structured fields → deterministic
+   formula → testable confidence is more robust.

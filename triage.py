@@ -57,7 +57,10 @@ def classify_email(email_json: dict) -> TriageResult:
     customer_only = find_customer_only_table(html)
     account_ref = find_account_reference(text)
 
-    intent_value, intent_remark_raw = find_payment_intent(text)
+    if bank_credit:
+        intent_value, intent_remark_raw = find_payment_intent(text)
+    else:
+        intent_value, intent_remark_raw = None, None
 
     if account_ref and not intent_value:
         intent_value = "on_account"

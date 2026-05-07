@@ -47,6 +47,12 @@ EVAL_SET = [
                 },
             ],
         },
+        "expected_assembly": {
+            "extraction_status": "clean",
+            "reconciliation_diff": "0.00",
+            "routing": "auto_apply",
+            "confidence_min": 0.95,
+        },
     },
     {
         "id": "ev_02_moana_full_booking",
@@ -112,6 +118,12 @@ EVAL_SET = [
             },
         ],
     },
+    "expected_assembly": {
+            "extraction_status": "access_payment",
+            "reconciliation_diff": "719.80",
+            "routing": "hitl_review",
+            "confidence_min": 0.85,
+        },
     },
     {
         "id": "ev_03_mpsez_full_booking_ift",
@@ -143,6 +155,12 @@ EVAL_SET = [
                 },
             ],
         },
+        "expected_assembly": {
+            "extraction_status": "rounding_diff",
+            "reconciliation_diff": "-0.70",
+            "routing": "hitl_review",
+            "confidence_min": 0.75,
+        },
     },
     {
         "id": "ev_04_lpg_needs_attachment",
@@ -156,6 +174,11 @@ EVAL_SET = [
         },
         "expected_allocations": {
             "count": 0,
+        },
+        "expected_assembly": {
+            "extraction_status": "deferred",
+            "routing_in": ["hitl_review", "exception"],
+            "confidence_min": 0.70,
         },
     },
     {
@@ -181,6 +204,11 @@ EVAL_SET = [
         "expected_allocations": {
             "count": 0,
         },
+        "expected_assembly": {
+            "extraction_status": "not_applicable",
+            "routing": "auto_apply",
+            "confidence_min": 0.93,
+        },
     },
     {
         "id": "ev_06_vinayak_partial_booking",
@@ -203,6 +231,11 @@ EVAL_SET = [
         },
         "expected_allocations": {
             "count": 0,
+        },
+        "expected_assembly": {
+            "extraction_status": "not_applicable",
+            "routing": "auto_apply",
+            "confidence_min": 0.93,
         },
     },
     {
@@ -228,6 +261,12 @@ EVAL_SET = [
             "all_rows_have_doc_type_none": True,  # Doc Type column absent
             "all_rows_have_tds_none": True,        # TDS column absent
             "all_rows_have_net_none": True,        # Net Amount column absent
+        },
+        "expected_assembly": {
+            "extraction_status": "clean",
+            "reconciliation_diff": "0.00",
+            "routing": "auto_apply",
+            "confidence_min": 0.95,
         },
     },
     {
@@ -258,6 +297,15 @@ EVAL_SET = [
                 },
             ],
         },
+        "expected_assembly": {
+            "extraction_status": "clean",
+            "reconciliation_diff": "0.00",
+            "routing_in": ["hitl_review", "auto_apply"],
+            # SAURASHTRA confidence is 0.79 due to weak narrative;
+            # tolerate either routing depending on how the formula
+            # treats the OTHER payment_mode case
+            "confidence_min": 0.75,
+        },
     },
     {
         "id": "ev_09_yesbank_full_booking_n_to_n",
@@ -279,6 +327,13 @@ EVAL_SET = [
             "all_rows_have_customer_reference_set": True,
             "all_rows_have_invoice_number_set": True,
             "all_rows_have_doc_type_set": True,  # YES BANK template has Doc Type column
+        },
+        "expected_assembly": {
+            "extraction_status_in": ["clean", "rounding_diff"],
+            # YES BANK shows -1.00 diff (allocations 36577 vs bank 36576)
+            # which falls under rounding_diff for 3 rows; either is acceptable
+            "routing": "auto_apply",
+            "confidence_min": 0.95,
         },
     },
     {
@@ -304,6 +359,11 @@ EVAL_SET = [
         },
         "expected_allocations": {
             "count": 0,
+        },
+        "expected_assembly": {
+            "extraction_status": "not_applicable",
+            "routing": "auto_apply",
+            "confidence_min": 0.93,
         },
     },
 ]

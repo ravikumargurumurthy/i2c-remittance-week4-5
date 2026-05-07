@@ -82,6 +82,47 @@ class PaymentIntent(str, Enum):
     FIFO_INSTRUCTION = "fifo_instruction"     # 'Please book on FIFO basis'
     OTHER_SPECIAL = "other_special"           # remark exists but doesn't match known
 
+class ExtractionStatus(str, Enum):
+    """Classification of email-internal reconciliation result.
+
+    Describes whether the email's own arithmetic is internally consistent.
+    Does NOT involve open ledger or bank statement comparison — that's
+    Project 2's job.
+
+    - CLEAN: bank_credits total == allocations net total (within rounding)
+    - ACCESS_PAYMENT: bank credit > allocations (customer overpaid; the
+      MOANA case)
+    - ALLOCATION_EXCEEDS_PAYMENT: bank credit < allocations (claims more
+      than was paid; unusual)
+    - ROUNDING_DIFF: small discrepancy attributable to source-data rounding
+      (the MPSEZ 30-paise case)
+    - NOT_APPLICABLE: email has bank credit but no allocations
+      (partial_booking, on_account_only)
+    - NOT_REMITTANCE: not a payment notification; reconciliation skipped
+    - DEFERRED: needs_attachment_parsing; reconciliation pending
+    """
+    CLEAN = "clean"
+    ACCESS_PAYMENT = "access_payment"
+    ALLOCATION_EXCEEDS_PAYMENT = "allocation_exceeds_payment"
+    ROUNDING_DIFF = "rounding_diff"
+    NOT_APPLICABLE = "not_applicable"
+    NOT_REMITTANCE = "not_remittance"
+    DEFERRED = "deferred"
+
+
+class RoutingDecision(str, Enum):
+    """Routing band for the extraction.
+
+    - AUTO_APPLY: confidence >= 0.95; downstream may apply automatically
+    - HITL_REVIEW: 0.70 <= confidence < 0.95; needs human review
+    - EXCEPTION: confidence < 0.70; route to exception queue
+
+    Mirrors the same enum used in Week 3's bank importer for consistency
+    across the cash app pipeline.
+    """
+    AUTO_APPLY = "auto_apply"
+    HITL_REVIEW = "hitl_review"
+    EXCEPTION = "exception"
 
 # ============================================================
 # Component schemas
@@ -210,6 +251,24 @@ class RemittanceExtraction(BaseModel):
             "E.g., 'Advance Payment for January', 'Please book on FIFO basis', "
             "'On A/C - 4000000321'. Approximately 60 characters of context "
             "around the matched phrase."
+        ),
+    )
+
+    # NEW: extraction status (email-internal reconciliation classification)
+    extraction_status: ExtractionStatus = Field(
+        default=ExtractionStatus.NOT_APPLICABLE,
+        description=(
+            "Classification of email-internal reconciliation. Does NOT "
+            "represent open-ledger matching (that's Project 2's job)."
+        ),
+    )
+
+    # NEW: routing decision based on confidence
+    routing_decision: RoutingDecision = Field(
+        default=RoutingDecision.HITL_REVIEW,
+        description=(
+            "Where this extraction should go next. Driven by confidence "
+            "score and matches Week 3's bank importer enum for consistency."
         ),
     )
 
