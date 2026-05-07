@@ -1,17 +1,19 @@
 # agent.py
 """
-Remittance extraction agent — Day 4 complete.
+Remittance extraction agent — Day 5 with master data resolution.
 
 State machine:
     START → triage → extract_bank_credits → extract_allocations
-          → reconcile → assemble → END
+          → reconcile → assemble → resolve → END
 
 Day 1: Triage (rule-based)
 Day 2: Bank credit extraction (LLM, per-row)
 Day 3: Allocation extraction (LLM, batched)
-Day 4: Reconciliation, confidence scoring, routing, assembly
+Day 4: Reconciliation, confidence, routing, assembly
+Day 5: Master data resolution (deterministic DB lookups)
 
-Output: a complete RemittanceExtraction per email, ready for Project 2.
+Output: a complete RemittanceExtraction per email with resolution status,
+ready for Project 2's matching logic.
 """
 
 from operator import add
@@ -26,6 +28,7 @@ from extract_allocation import extract_allocations_from_table
 from extract_bank_credit import extract_bank_credits_from_table
 from html_tools import find_allocation_table, find_bank_credit_table
 from reconcile import ReconciliationResult, reconcile
+from resolve import resolve
 from schemas import (
     BankCreditLine,
     EmailKind,
@@ -122,7 +125,6 @@ def extract_allocations_node(state: AgentState) -> dict:
 
 
 def reconcile_node(state: AgentState) -> dict:
-    """Compute email-internal reconciliation."""
     if state.error:
         return {}
     if not state.triage:
@@ -141,14 +143,11 @@ def reconcile_node(state: AgentState) -> dict:
 
 
 def assemble_node(state: AgentState) -> dict:
-    """Assemble the final RemittanceExtraction object."""
     if state.error:
         return {}
     if not state.triage or not state.reconciliation:
         return {
-            "error": (
-                "assemble called before triage or reconciliation completed"
-            )
+            "error": "assemble called before triage or reconciliation completed"
         }
 
     try:
@@ -166,6 +165,36 @@ def assemble_node(state: AgentState) -> dict:
     return {"extraction": extraction}
 
 
+def resolve_node(state: AgentState) -> dict:
+    """Resolve customer and invoice references against master tables.
+
+    Mutates the existing extraction object to add the resolution field.
+    On DB error, populates resolution.resolution_error rather than
+    failing the agent — extraction is still useful even with degraded
+    resolution data.
+    """
+    if state.error:
+        return {}
+    if not state.extraction:
+        return {"error": "resolve called before extraction was assembled"}
+
+    try:
+        resolution = resolve(state.extraction)
+    except Exception as e:
+        # Catastrophic failure (shouldn't happen — resolve() catches its own
+        # errors). If it does, log and continue with extraction unchanged.
+        import sys
+        print(
+            f"[WARN] resolve() raised unhandled: {type(e).__name__}: {e}",
+            file=sys.stderr,
+        )
+        return {}
+
+    # Update extraction with resolution info
+    updated = state.extraction.model_copy(update={"resolution": resolution})
+    return {"extraction": updated}
+
+
 # ============================================================
 # Build graph
 # ============================================================
@@ -176,13 +205,15 @@ builder.add_node("extract_bank_credits", extract_bank_credits_node)
 builder.add_node("extract_allocations", extract_allocations_node)
 builder.add_node("reconcile", reconcile_node)
 builder.add_node("assemble", assemble_node)
+builder.add_node("resolve", resolve_node)
 
 builder.add_edge(START, "triage")
 builder.add_edge("triage", "extract_bank_credits")
 builder.add_edge("extract_bank_credits", "extract_allocations")
 builder.add_edge("extract_allocations", "reconcile")
 builder.add_edge("reconcile", "assemble")
-builder.add_edge("assemble", END)
+builder.add_edge("assemble", "resolve")
+builder.add_edge("resolve", END)
 
 graph = builder.compile()
 
@@ -192,16 +223,7 @@ graph = builder.compile()
 # ============================================================
 
 def process_email(message_id: str, email_json: dict) -> dict:
-    """Run the agent on one email.
-
-    Returns dict with:
-        - 'triage': TriageResult
-        - 'bank_credits': list[BankCreditLine]
-        - 'invoice_allocations': list[InvoiceAllocation]
-        - 'reconciliation': ReconciliationResult
-        - 'extraction': RemittanceExtraction (the deliverable)
-        - 'error': str if anything failed
-    """
+    """Run the agent on one email."""
     initial = AgentState(message_id=message_id, email_json=email_json)
     final_state = graph.invoke(initial)
 
@@ -225,7 +247,7 @@ if __name__ == "__main__":
     src = get_email_source()
 
     print("=" * 80)
-    print("Day 4 Demo — Full Pipeline (Triage + Extraction + Reconciliation + Assembly)")
+    print("Day 5 Demo — Full Pipeline with Master Data Resolution")
     print("=" * 80)
     for mid in src.list_known_message_ids():
         email = src.get_email(mid)
@@ -242,10 +264,18 @@ if __name__ == "__main__":
         subject = (ext.subject or "")[:40]
         print(f"\n  {subject}")
         print(f"    kind:                 {ext.email_kind.value}")
-        print(f"    payment_intent:       {ext.payment_intent.value}")
         print(f"    bank_credits:         {len(ext.bank_credits)} (total={ext.total_bank_credits})")
         print(f"    allocations:          {len(ext.invoice_allocations)} (total={ext.total_net_allocated})")
-        print(f"    reconciliation_diff:  {ext.reconciliation_diff}")
         print(f"    extraction_status:    {ext.extraction_status.value}")
         print(f"    confidence:           {ext.confidence:.3f}")
         print(f"    routing:              {ext.routing_decision.value}")
+
+        if ext.resolution:
+            res = ext.resolution
+            print(f"    resolution:")
+            print(f"      customer:           {ext.customer_reference} → resolved={res.customer_resolved}")
+            print(f"      invoices:           {res.invoices_resolved}/{res.invoices_total}")
+            if res.unresolved_invoice_numbers:
+                print(f"      unresolved:         {res.unresolved_invoice_numbers}")
+            if res.resolution_error:
+                print(f"      ERROR:              {res.resolution_error}")

@@ -206,6 +206,66 @@ class InvoiceAllocation(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+class ResolutionInfo(BaseModel):
+    """Resolution status of customer and invoice references against master tables.
+
+    Populated by Day 5's resolve_node by querying:
+    - t_customer_master.customer_number for the customer reference
+    - t_invoice_header.invoice_number for invoice references
+
+    None values mean either:
+    - The reference wasn't present in the email (nothing to resolve)
+    - The lookup failed (network issue, query error)
+
+    False values mean the reference was present but didn't resolve in the master.
+    """
+    customer_resolved: Optional[bool] = Field(
+        None,
+        description=(
+            "True if the customer reference was found in t_customer_master. "
+            "False if not found. None if no customer reference to resolve."
+        ),
+    )
+    canonical_customer_number: Optional[str] = Field(
+        None,
+        description=(
+            "Canonical customer_number from t_customer_master if resolved. "
+            "May differ from email's reference (e.g., email says '761', "
+            "master has '0000761')."
+        ),
+    )
+    canonical_customer_name: Optional[str] = Field(
+        None,
+        description="Customer name from master record if resolved.",
+    )
+    invoices_total: int = Field(
+        0,
+        description="Total number of invoice references checked.",
+    )
+    invoices_resolved: int = Field(
+        0,
+        description=(
+            "Number of invoice references that were found in t_invoice_header. "
+            "If invoices_resolved < invoices_total, some references are ghosts."
+        ),
+    )
+    unresolved_invoice_numbers: list[str] = Field(
+        default_factory=list,
+        description="List of invoice numbers that did NOT resolve in the master.",
+    )
+    resolution_notes: Optional[str] = Field(
+        None,
+        description="Human-readable summary of resolution outcomes.",
+    )
+    resolution_error: Optional[str] = Field(
+        None,
+        description=(
+            "If resolution failed entirely (e.g., DB unreachable), the error "
+            "message. None means resolution ran to completion."
+        ),
+    )
+
+    model_config = ConfigDict(from_attributes=True)
 
 # ============================================================
 # Top-level schema
@@ -292,7 +352,15 @@ class RemittanceExtraction(BaseModel):
             "allocation. Not applicable when payment_intent != INVOICE_PAYMENT."
         ),
     )
-
+    # NEW: master data resolution result (Day 5)
+    resolution: Optional[ResolutionInfo] = Field(
+        default=None,
+        description=(
+            "Resolution of customer and invoice references against master "
+            "tables. None when resolution wasn't run (e.g., non_remittance)."
+        ),
+    )
+    
     # Reasoning
     confidence: float = Field(..., ge=0.0, le=1.0)
     extraction_notes: Optional[str] = None
@@ -311,5 +379,206 @@ class RemittanceExtraction(BaseModel):
         if v is None or v == "":
             return None
         return Decimal(str(v))
+
+    model_config = ConfigDict(from_attributes=True)
+
+class BankPaymentLine(BaseModel):
+    """
+    One row from cashapp.t_raw_bank_statements.
+
+    Primary key: `bank_txn_id` (UUID-like string from your DE pipeline).
+    Most important fields for the agent:
+    - `narrative` (free-text payment description; primary input for parsing)
+    - `amount` (transaction amount; INR for this client)
+    - `payment_mode` (NEFT/RTGS/IMPS/CHEQUE/etc. for Indian banking)
+    - `value_date` (when funds available)
+    """
+
+    # Identifiers
+    bank_txn_id: str
+    reference: Optional[str] = None
+    statement_id: Optional[str] = None
+
+    # Account
+    account_number: Optional[str] = None
+    bank_name: Optional[str] = None
+
+    # Dates
+    statement_date: Optional[date] = None
+    value_date: Optional[date] = None
+    entry_date: Optional[date] = None
+
+    # Money
+    currency: Optional[str] = Field(None, max_length=3)
+    amount: Decimal
+
+    # Transaction details
+    transaction_type: Optional[str] = None
+    payment_mode: Optional[str] = None
+    cheque_number: Optional[str] = None
+    narrative: Optional[str] = None
+
+    # Pipeline metadata
+    status: Optional[str] = None
+    source_file: Optional[str] = None
+    created_by: Optional[str] = None
+    vin: Optional[str] = None
+    created_date: Optional[datetime] = None
+    updated_date: Optional[datetime] = None
+    load_date: Optional[datetime] = None
+
+    # ---- Validators: empty-string-to-None for Optional[str] fields ----
+    @field_validator(
+        "reference", "statement_id", "account_number", "bank_name",
+        "currency", "transaction_type", "payment_mode", "cheque_number",
+        "narrative", "status", "source_file", "created_by", "vin",
+        mode="before",
+    )
+    @classmethod
+    def _empty_str_to_none(cls, v):
+        return _empty_to_none(v)
+
+    # ---- Amount: float (or string) → Decimal (safe for money) ----
+    @field_validator("amount", mode="before")
+    @classmethod
+    def _amount_to_decimal(cls, v):
+        if v is None:
+            raise ValueError("amount is required")
+        # str() conversion handles floats safely (avoids float-binary precision)
+        return Decimal(str(v))
+
+    model_config = ConfigDict(from_attributes=True)
+
+class OpenInvoice(BaseModel):
+    """
+    One row from cashapp.t_invoice_header.
+
+    For this learning project, all rows are treated as candidates for matching
+    (no filter on status or clearing_document_number). Production deployment
+    would filter by appropriate open/closed semantics.
+
+    Most important fields for matching:
+    - `invoice_number` (primary match key)
+    - `document_number` (often referenced in remittance instead of invoice_number)
+    - `customer_number`, `customer_name` (entity match)
+    - `invoice_amount` (amount-driven matching)
+    - `po_number`, `invoice_reference` (alternative match keys)
+    """
+
+    # Synthetic primary key
+    id: int
+
+    # Entity / customer
+    entity_code: Optional[str] = None
+    customer_number: Optional[str] = None
+    customer_name: Optional[str] = None
+
+    # Multiple matching keys — these are why I2C matching is hard
+    invoice_number: Optional[str] = None
+    document_number: Optional[str] = None
+    po_number: Optional[str] = None
+    invoice_reference: Optional[str] = None
+
+    # Document metadata
+    invoice_description: Optional[str] = None
+    document_type: Optional[str] = None
+    reason_code: Optional[str] = None
+    payment_terms: Optional[str] = None
+    tax_code: Optional[str] = None
+    gl_indicator: Optional[str] = None
+
+    # Dates
+    invoice_date: Optional[date] = None
+    posting_date: Optional[date] = None
+    document_date: Optional[date] = None
+    net_due_date: Optional[date] = None
+
+    # Money
+    invoice_currency: Optional[str] = Field(None, max_length=3)
+    invoice_amount: Decimal
+
+    # Clearing info — not used for filtering per project scope
+    clearing_document_number: Optional[str] = None
+    clearing_date: Optional[date] = None
+
+    # Status / lifecycle
+    status: Optional[str] = None
+
+    # Audit
+    created_date: Optional[datetime] = None
+    updated_date: Optional[datetime] = None
+
+    # ---- Validators ----
+    @field_validator(
+        "entity_code", "customer_number", "customer_name",
+        "invoice_number", "document_number", "po_number", "invoice_reference",
+        "invoice_description", "document_type", "reason_code", "payment_terms",
+        "tax_code", "gl_indicator", "invoice_currency",
+        "clearing_document_number", "status",
+        mode="before",
+    )
+    @classmethod
+    def _empty_str_to_none(cls, v):
+        return _empty_to_none(v)
+
+    @field_validator("invoice_amount", mode="before")
+    @classmethod
+    def _amount_to_decimal(cls, v):
+        if v is None:
+            raise ValueError("invoice_amount is required")
+        return Decimal(str(v))
+
+    model_config = ConfigDict(from_attributes=True)
+
+class Customer(BaseModel):
+    """
+    One row from cashapp.t_customer_master.
+
+    The most important field for matching is `vin` (Virtual account
+    Identification Number, format: ZLAD + 14 alphanumeric chars).
+    When a bank narrative contains a VIN, customer identification is
+    essentially deterministic — look it up here.
+
+    The other identification path is `customer_name`, used for fuzzy
+    matching when no VIN is present in the narrative.
+    """
+
+    customer_number: str
+    customer_name: Optional[str] = None
+    vin: Optional[str] = None
+    entity_code: Optional[str] = None
+
+    # Address / contact
+    bill_to_name: Optional[str] = None
+    bill_to_address: Optional[str] = None
+    bill_to_phone: Optional[str] = None
+    bill_to_contact: Optional[str] = None
+    ship_to_name: Optional[str] = None
+    ship_to_address: Optional[str] = None
+    ship_to_phone: Optional[str] = None
+    ship_to_contact: Optional[str] = None
+
+    # Tax IDs
+    tax_id_1: Optional[str] = None
+    tax_id_2: Optional[str] = None
+    tax_id_3: Optional[str] = None
+
+    payment_terms: Optional[str] = None
+
+    # Audit
+    created_date: Optional[datetime] = None
+    updated_date: Optional[datetime] = None
+    created_by: Optional[str] = None
+
+    @field_validator(
+        "customer_name", "vin", "entity_code", "bill_to_name", "bill_to_address",
+        "bill_to_phone", "bill_to_contact", "ship_to_name", "ship_to_address",
+        "ship_to_phone", "ship_to_contact", "tax_id_1", "tax_id_2", "tax_id_3",
+        "payment_terms", "created_by",
+        mode="before",
+    )
+    @classmethod
+    def _empty_str_to_none(cls, v):
+        return _empty_to_none(v)
 
     model_config = ConfigDict(from_attributes=True)

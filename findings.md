@@ -443,3 +443,168 @@ patterns that legitimately don't have allocations. Bumped to full credit
 4. Mahek's email footers are validation oracles. The "Access Payment 719.80"
    text in the MOANA email is operational documentation; for the agent it's
    a free correctness check on reconciliation arithmetic.
+
+## Day 5 — get_invoice_by_number signature mismatch
+
+Initial assumption: `get_invoice_by_number(invoice_number)`. Reality:
+the Week 3 function requires both customer_number AND invoice_number.
+
+This is good Week 3 design — invoice numbers can collide across
+customers (different customers' invoice 192400005397 are different
+invoices), so requiring the customer number prevents lookups returning
+the wrong row.
+
+Fix: thread customer_number through to the invoice lookup. We already
+resolved the customer earlier, so we have the value handy.
+
+Lesson: production-grade lookup APIs often require more parameters
+than you'd guess. Composite keys are common. When grep'ing for a
+function signature, scroll past the first line — the parameters often
+tell you about domain constraints.
+
+## Day 5 — Resolution shipped: real data validates the architecture
+
+After fixing the get_invoice_by_number signature mismatch, the demo
+shows resolution working as designed:
+
+- 6/6 customer references resolved against t_customer_master
+- 14/16 invoice references resolved against t_invoice_header
+- Unresolved invoices surfaced cleanly with no agent crash
+
+The two unresolved invoices (MPSEZ 192400000120, SAURASHTRA 192400004327)
+are likely missing from dev DB rather than being agent errors. Either
+way, the resolution layer correctly surfaced them as ghost references.
+
+### Multi-signal HITL routing observed in the wild
+
+MPSEZ now has TWO independent signals routing it to HITL:
+- extraction_status=rounding_diff (paise-level discrepancy)
+- invoice_resolved=False (invoice not in master)
+
+Both signals point to the same email, both via different mechanisms.
+This is the production pattern we want — multiple corroborating
+signals reinforce routing decisions rather than relying on any single
+check.
+
+When Project 2's matching agent sees this RemittanceExtraction, it'll
+have rich context about WHY the email needs review: not just "match
+failed" but "reconciliation diff plus unresolved invoice plus weak
+narrative metadata."
+
+### Function signature lessons (third instance)
+
+This is the third instance in this project of "assumed APIs are worse
+than discovered APIs":
+1. Day 2: _find_header_index iteration order
+2. Day 5 part 1: lookup_* vs get_* function naming
+3. Day 5 part 2: get_invoice_by_number requires customer_number too
+
+Each one cost 30+ minutes of debugging. The fix in each case was the
+same: check the actual function signature before writing the consumer.
+
+Internalizing: 30 seconds of `grep "^def" db.py` (or reading the
+function signature in the source file) prevents 30 minutes of
+debugging the signature mismatch.
+
+### Generalizable patterns
+
+1. Production-grade lookup APIs require composite keys for safety
+   (customer_number + invoice_number), not just convenience-friendly
+   single-arg functions. This prevents wrong-row returns when business
+   identifiers have collisions.
+
+2. Multiple independent signals routing to the same decision is a
+   feature, not redundancy. MPSEZ's rounding_diff + missing invoice
+   reinforce each other. The agent should surface BOTH; downstream
+   review benefits from richness, not minimalism.
+
+3. Resolution failures are signal, not noise. Agent surfacing "invoice
+   not found in master" is genuinely useful information for HITL — it
+   tells reviewers exactly what to investigate.
+
+## Day 5 — Master data resolution shipped
+
+10/10 single-run, 10/10 with 5/5 multi-run threshold across all 50 runs.
+
+### Real-data validation
+
+Resolution against the live dev database surfaced:
+- 6/6 customer references resolved (KNK 761, MOANA 16736, MPSEZ 8000000497,
+  J B BODA 4000000420, SAURASHTRA 5357, YES BANK 12624)
+- 14/16 invoice references resolved
+- 2 unresolved invoices (MPSEZ 192400000120, SAURASHTRA 192400004327)
+  surfaced as ghost references for HITL investigation
+
+The two unresolved invoices may be missing from dev DB or may have been
+settled and archived. Either way, the resolution layer correctly surfaced
+them rather than failing silently.
+
+### Multi-signal HITL routing observed
+
+MPSEZ now has TWO independent signals routing it to HITL:
+- extraction_status=rounding_diff (paise-level discrepancy)
+- invoice_resolved=False (invoice not in master)
+
+Both signals point to the same email via different mechanisms. This is
+the production pattern we want — multiple corroborating signals reinforce
+routing decisions rather than relying on any single check.
+
+### Architecture decisions
+
+1. Copied Week 3's sql_client.py and db.py rather than imported. Each
+   project stays self-contained as a portfolio repo. Schema duplication
+   accepted — the duplicated schemas describe DB rows, not domain logic.
+
+2. Resolution is deterministic, not LLM-based. Same input, same output.
+   LLM would add cost and variance with no benefit.
+
+3. Resolution failures don't fail the agent. DB errors are caught,
+   logged with [WARN], and surfaced via resolution.resolution_error.
+   Extraction still completes with degraded confidence.
+
+4. Customer number priority for invoice lookup: allocation's own
+   customer_reference > canonical_customer_number > raw customer_ref.
+   Each is more or less specific; the order matters for edge cases
+   even though all three values were identical in our 10 samples.
+
+### Three function-signature debugging episodes
+
+This day surfaced three back-to-back signature mismatches when
+integrating Week 3's data layer:
+
+1. SqlClient (class) vs query_sql (function) — wrong import name
+2. lookup_* vs get_* — wrong function name family
+3. get_invoice_by_number(invoice_number) vs (customer_number,
+   invoice_number) — wrong number of required args
+
+Each cost 30+ minutes of debugging. Fix in each case was the same:
+check the actual signature before writing the consumer.
+
+Internalized: 30 seconds of `grep "^def" db.py` would have prevented
+each one. Assumed APIs are worse than discovered APIs.
+
+Production-grade lookup APIs often require more parameters than
+convenience-friendly single-arg versions — composite keys (customer +
+invoice) prevent wrong-row returns when business identifiers can collide
+across customers.
+
+### Generalizable patterns
+
+1. Self-contained projects beat shared libraries early on. Copying
+   sql_client.py adds 200 LOC but eliminates inter-repo coupling. For
+   portfolio repos, each project being independently runnable matters
+   more than DRY.
+
+2. DB lookups belong in deterministic stages, not LLM stages. The LLM
+   has done its work upstream by extracting the references. Looking
+   them up is data-layer work — should be deterministic and testable.
+
+3. Resolution failures are signal, not noise. The agent doesn't refuse
+   to produce output when references don't resolve; it captures the
+   failure as structured data so downstream systems can act on it.
+   Failure-as-data is a recurring pattern in production agents.
+
+4. Multi-run stability across deterministic stages is a strong
+   correctness signal. When 5/5 runs produce identical confidence
+   scores down to 3 decimals, the formula is doing what you think it's
+   doing.

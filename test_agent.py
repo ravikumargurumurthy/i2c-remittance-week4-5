@@ -6,6 +6,7 @@ Day 1 assertions: email_kind, payment_intent (when expected)
 Day 2 assertions: bank_credits count + per-row field checks
 Day 3 assertions: invoice_allocations count + per-row exact values
 Day 4 assertions: extraction_status, reconciliation_diff, routing, confidence
+Day 5 assertions: resolution outcomes (customer_resolved, invoices_total/resolved)
 
 Multi-run methodology: each case runs N times via EVAL_RUNS env var.
 Default PASS_THRESHOLD = EVAL_RUNS (strict).
@@ -91,6 +92,15 @@ def _check_one_run(case, result):
         if not passed:
             return False, reason
 
+    # ---- Day 5: resolution ----
+    expected_resolution = case.get("expected_resolution", {})
+    if expected_resolution:
+        passed, reason = _check_resolution(
+            result.get("extraction"), expected_resolution
+        )
+        if not passed:
+            return False, reason
+
     return True, None
 
 
@@ -117,7 +127,6 @@ def _check_bank_credits(actual_credits, expected: dict) -> tuple[bool, str | Non
             f"got only {len(actual_credits)} bank credits"
         )
 
-    # Greedy match: for each expected row, find a matching actual row
     unmatched = list(actual_credits)
     for expected_row in expected_rows:
         match_idx = None
@@ -177,7 +186,6 @@ def _credit_summary(credit) -> str:
 
 def _check_allocations(actual_allocs, expected: dict) -> tuple[bool, str | None]:
     """Validate invoice allocations against expected."""
-    # Count check
     expected_count = expected.get("count")
     if expected_count is not None and len(actual_allocs) != expected_count:
         return False, (
@@ -185,7 +193,6 @@ def _check_allocations(actual_allocs, expected: dict) -> tuple[bool, str | None]
             f"expected {expected_count}"
         )
 
-    # Negative-amount preservation check
     if expected.get("expect_negative_amounts"):
         has_negative = any(
             (a.gross_amount and a.gross_amount < 0)
@@ -199,7 +206,6 @@ def _check_allocations(actual_allocs, expected: dict) -> tuple[bool, str | None]
                 "LLM may have stripped the sign."
             )
 
-    # Aggregate property checks
     if expected.get("all_rows_have_doc_type_none"):
         bad = [a for a in actual_allocs if a.document_type is not None]
         if bad:
@@ -242,7 +248,6 @@ def _check_allocations(actual_allocs, expected: dict) -> tuple[bool, str | None]
         if bad:
             return False, f"Expected document_type on all rows; {len(bad)} missing"
 
-    # Per-row checks
     expected_rows = expected.get("rows", [])
     if not expected_rows:
         return True, None
@@ -253,7 +258,6 @@ def _check_allocations(actual_allocs, expected: dict) -> tuple[bool, str | None]
             f"got only {len(actual_allocs)} allocations"
         )
 
-    # Greedy match: for each expected row, find a matching actual row
     unmatched = list(actual_allocs)
     for expected_row in expected_rows:
         match_idx = None
@@ -332,7 +336,6 @@ def _check_assembly(extraction, expected: dict) -> tuple[bool, str | None]:
     if not extraction:
         return False, "expected_assembly defined but result has no 'extraction'"
 
-    # extraction_status (exact OR _in list)
     if "extraction_status" in expected:
         if extraction.extraction_status.value != expected["extraction_status"]:
             return False, (
@@ -346,7 +349,6 @@ def _check_assembly(extraction, expected: dict) -> tuple[bool, str | None]:
                 f"expected one of {expected['extraction_status_in']!r}"
             )
 
-    # reconciliation_diff (exact)
     if "reconciliation_diff" in expected:
         expected_diff = Decimal(expected["reconciliation_diff"])
         if extraction.reconciliation_diff != expected_diff:
@@ -355,7 +357,6 @@ def _check_assembly(extraction, expected: dict) -> tuple[bool, str | None]:
                 f"expected {expected_diff}"
             )
 
-    # routing (exact OR _in list)
     if "routing" in expected:
         if extraction.routing_decision.value != expected["routing"]:
             return False, (
@@ -369,12 +370,73 @@ def _check_assembly(extraction, expected: dict) -> tuple[bool, str | None]:
                 f"expected one of {expected['routing_in']!r}"
             )
 
-    # confidence_min (lower-bound check)
     if "confidence_min" in expected:
         if extraction.confidence < expected["confidence_min"]:
             return False, (
                 f"confidence: got {extraction.confidence:.3f}, "
                 f"expected >= {expected['confidence_min']}"
+            )
+
+    return True, None
+
+
+# ============================================================
+# Resolution assertions (Day 5)
+# ============================================================
+
+def _check_resolution(extraction, expected: dict) -> tuple[bool, str | None]:
+    """Validate resolution outcome on the assembled extraction.
+
+    Eval design note: we don't assert specific customer_resolved=True or
+    invoices_resolved=N values because dev DB data varies. We assert that
+    resolution RAN cleanly (no resolution_error), that lookups were
+    attempted where expected, and that the structure is consistent.
+    """
+    if not extraction:
+        return False, "expected_resolution defined but no extraction"
+
+    res = extraction.resolution
+    if not res:
+        return False, "expected_resolution defined but extraction.resolution is None"
+
+    # ran_successfully: resolution_error must be None (DB calls completed)
+    if expected.get("ran_successfully"):
+        if res.resolution_error:
+            return False, (
+                f"Resolution had error: {res.resolution_error}"
+            )
+
+    # skipped_due_to_email_kind: no lookups attempted (for non_remittance etc)
+    if expected.get("skipped_due_to_email_kind"):
+        if res.invoices_total > 0:
+            return False, (
+                f"Expected skipped resolution but {res.invoices_total} "
+                f"invoice lookups were attempted"
+            )
+        if res.customer_resolved is not None:
+            return False, (
+                f"Expected skipped resolution but customer_resolved was "
+                f"{res.customer_resolved!r} (should be None)"
+            )
+
+    # customer_lookup_attempted: customer_resolved is True OR False (not None)
+    if expected.get("customer_lookup_attempted"):
+        if res.customer_resolved is None:
+            return False, (
+                "Expected customer lookup to be attempted but "
+                "customer_resolved is None"
+            )
+
+    # invoices_total_matches_allocations: every allocation with an invoice
+    # number should have been looked up
+    if expected.get("invoices_total_matches_allocations"):
+        n_allocs_with_invoice = sum(
+            1 for a in extraction.invoice_allocations if a.invoice_number
+        )
+        if res.invoices_total != n_allocs_with_invoice:
+            return False, (
+                f"invoices_total ({res.invoices_total}) doesn't match "
+                f"allocations with invoice_number ({n_allocs_with_invoice})"
             )
 
     return True, None
@@ -404,6 +466,7 @@ def test_extraction(case):
             reason = f"raised {type(e).__name__}: {e}"
             result = {}
 
+        ext = result.get("extraction")
         runs.append({
             "run": i + 1,
             "passed": passed,
@@ -411,20 +474,13 @@ def test_extraction(case):
             "kind": result.get("triage").email_kind.value if result.get("triage") else None,
             "credits_count": len(result.get("bank_credits") or []),
             "allocs_count": len(result.get("invoice_allocations") or []),
-            "status": (
-                result.get("extraction").extraction_status.value
-                if result.get("extraction")
-                else None
-            ),
-            "routing": (
-                result.get("extraction").routing_decision.value
-                if result.get("extraction")
-                else None
-            ),
-            "confidence": (
-                f"{result.get('extraction').confidence:.3f}"
-                if result.get("extraction")
-                else None
+            "status": ext.extraction_status.value if ext else None,
+            "routing": ext.routing_decision.value if ext else None,
+            "confidence": f"{ext.confidence:.3f}" if ext else None,
+            "resolution": (
+                f"{ext.resolution.invoices_resolved}/{ext.resolution.invoices_total}"
+                if ext and ext.resolution
+                else "n/a"
             ),
         })
 
@@ -436,8 +492,8 @@ def test_extraction(case):
             print(
                 f"  {status} run {r['run']}: kind={r['kind']} "
                 f"credits={r['credits_count']} allocs={r['allocs_count']} "
-                f"recon_status={r['status']} routing={r['routing']} "
-                f"conf={r['confidence']}"
+                f"recon={r['status']} routing={r['routing']} "
+                f"conf={r['confidence']} resolution={r['resolution']}"
             )
         else:
             print(f"  {status} run {r['run']}: {r['reason']}")

@@ -53,6 +53,11 @@ EVAL_SET = [
             "routing": "auto_apply",
             "confidence_min": 0.95,
         },
+        "expected_resolution": {
+        "ran_successfully": True,
+        "customer_lookup_attempted": True,
+        "invoices_total_matches_allocations": True,
+    },
     },
     {
         "id": "ev_02_moana_full_booking",
@@ -124,6 +129,11 @@ EVAL_SET = [
             "routing": "hitl_review",
             "confidence_min": 0.85,
         },
+    "expected_resolution": {
+        "ran_successfully": True,
+        "customer_lookup_attempted": True,
+        "invoices_total_matches_allocations": True,
+        },   
     },
     {
         "id": "ev_03_mpsez_full_booking_ift",
@@ -161,6 +171,11 @@ EVAL_SET = [
             "routing": "hitl_review",
             "confidence_min": 0.75,
         },
+        "expected_resolution": {
+        "ran_successfully": True,
+        "customer_lookup_attempted": True,
+        "invoices_total_matches_allocations": True,
+        },   
     },
     {
         "id": "ev_04_lpg_needs_attachment",
@@ -179,6 +194,10 @@ EVAL_SET = [
             "extraction_status": "deferred",
             "routing_in": ["hitl_review", "exception"],
             "confidence_min": 0.70,
+        },
+        "expected_resolution": {
+            "ran_successfully": True,
+            "skipped_due_to_email_kind": True,
         },
     },
     {
@@ -209,6 +228,10 @@ EVAL_SET = [
             "routing": "auto_apply",
             "confidence_min": 0.93,
         },
+        "expected_resolution": {
+        "ran_successfully": True,
+        "invoices_total_matches_allocations": True,
+        },   
     },
     {
         "id": "ev_06_vinayak_partial_booking",
@@ -237,6 +260,10 @@ EVAL_SET = [
             "routing": "auto_apply",
             "confidence_min": 0.93,
         },
+        "expected_resolution": {
+        "ran_successfully": True,
+        "invoices_total_matches_allocations": True,
+        },   
     },
     {
         "id": "ev_07_jboda_full_booking",
@@ -268,6 +295,11 @@ EVAL_SET = [
             "routing": "auto_apply",
             "confidence_min": 0.95,
         },
+        "expected_resolution": {
+        "ran_successfully": True,
+        "customer_lookup_attempted": True,
+        "invoices_total_matches_allocations": True,
+        },   
     },
     {
         "id": "ev_08_saurashtra_full_booking",
@@ -306,6 +338,11 @@ EVAL_SET = [
             # treats the OTHER payment_mode case
             "confidence_min": 0.75,
         },
+        "expected_resolution": {
+        "ran_successfully": True,
+        "customer_lookup_attempted": True,
+        "invoices_total_matches_allocations": True,
+        },   
     },
     {
         "id": "ev_09_yesbank_full_booking_n_to_n",
@@ -335,6 +372,11 @@ EVAL_SET = [
             "routing": "auto_apply",
             "confidence_min": 0.95,
         },
+        "expected_resolution": {
+        "ran_successfully": True,
+        "customer_lookup_attempted": True,
+        "invoices_total_matches_allocations": True,
+        },   
     },
     {
         "id": "ev_10_indus_on_account",
@@ -365,5 +407,9 @@ EVAL_SET = [
             "routing": "auto_apply",
             "confidence_min": 0.93,
         },
+        "expected_resolution": {
+        "ran_successfully": True,
+        "invoices_total_matches_allocations": True,
+        },   
     },
 ]
