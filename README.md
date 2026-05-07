@@ -1,31 +1,63 @@
 # I2C Remittance Extraction Agent
 
-The email-extraction layer of an I2C cash application system for Adani
-Ports & SEZ. Reads remittance emails from the corporate mailbox, extracts
-structured `RemittanceExtraction` records consumed by the downstream
-matching agent.
+An LLM-based agent that converts unstructured payment notification emails into
+structured RemittanceExtraction objects for downstream cash application matching.
 
-## Status
+Built for [Adani Ports & SEZ](https://www.adaniports.com) O2C-GCC team. Agent
+processes real production emails via Microsoft Graph passthrough API, extracts
+structured remittance data across six payment modes and six column-naming
+conventions, validates against master tables, and routes to a Streamlit HITL
+interface.
 
-Project 1, Day 0 of 7. Foundation in place:
+## At a glance
 
-- Email source abstraction (file-based for dev, API-based for prod)
-- Pydantic schemas covering 4 email kinds × 6 payment modes
-- HTML table extraction tool for Outlook-generated email bodies
-- Smoke test passing against 10 real sample emails
+- **5 email kinds** (full_booking, partial_booking, on_account_only, non_remittance, needs_attachment_parsing)
+- **6 payment modes** (NEFT, RTGS, IMPS, UPI, IFT, OTHER)
+- **6 column-naming conventions** for invoice allocations
+- **5 payment intent types** (advance, security_deposit, on_account, fifo_instruction, invoice_payment)
+- **3 routing bands** (auto_apply, hitl_review, exception)
+- **Multi-run stable** (50/50 across 10 real samples × 5 runs)
+- **Real production data** (not synthetic toys)
+- **Master data resolution** (customer + invoice references verified against canonical tables)
 
-Next: Day 1 builds the triage agent (classifies email_kind only).
+## Architecture
+[Email API] ─┐
+├─→ [Triage]   (rule-based, classifies email_kind + payment_intent)
+│       ↓
+│   [Extract Bank Credits]   (LLM, per-row, 6 payment modes)
+│       ↓
+│   [Extract Allocations]    (LLM, batched per-table, 6 column conventions)
+│       ↓
+│   [Reconcile]              (rule-based, computes diff and classifies)
+│       ↓
+│   [Assemble]               (combines all signals into RemittanceExtraction)
+│       ↓
+│   [Resolve]                (rule-based, validates against master tables)
+│       ↓
+│   [RemittanceExtraction] ──→ [Project 2: Matching Agent (planned)]
+│
+[SQL Gateway]┘
 
-## Design pillars
+## Screenshots
 
-- **Real-data driven.** Schema and tools designed against 10 actual Adani
-  O2C-GCC emails covering full bookings, partial bookings, on-account
-  payments, and non-remittance noise.
-- **Source abstraction.** Same agent code runs against local files (dev)
-  or live email API (prod). One protocol, two implementations.
-- **LLM where it earns its place.** HTML parsing is deterministic
-  (BeautifulSoup). LLM handles column-name variation, table-purpose
-  classification, and reconciliation reasoning — tasks where rules fail.
+### Inbox view
+![Inbox](docs/screenshot_inbox.png)
+
+All extractions sorted by routing band. HITL queue surfaces the cases needing
+human review (rounding discrepancies, overpayments, weak narrative metadata,
+deferred attachment processing).
+
+### Detail view
+![Detail](docs/screenshot_detail_moana.png)
+
+Side-by-side view of extraction data and email body. Shows the agent's full
+reasoning — triage classification, bank credits, allocations, reconciliation
+status, master resolution, and confidence breakdown.
+
+### Summary view
+![Summary](docs/screenshot_summary.png)
+
+Aggregate metrics across the extraction queue.
 
 ## Quick start
 
@@ -37,137 +69,93 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env  # fill in API keys
-
-# Add your real samples to the gitignored folder
-mkdir -p data/sample_emails_REAL
-# (copy your real emails here)
-
-python smoke_test.py  # verifies the foundation
+cp .env.example .env  # fill in API keys (Azure OpenAI; SQL/Email APIs are dev-only)
 ```
 
-## What's in here
-
-- `email_source.py` — Protocol-based abstraction with FileBasedEmailSource
-  and APIBasedEmailSource
-- `schemas.py` — RemittanceExtraction, BankCreditLine, InvoiceAllocation,
-  EmailKind, PaymentMode
-- `html_tools.py` — BeautifulSoup-based HTML table extraction
-- `smoke_test.py` — runs all 10 samples through the foundation
-- `INTEGRATION.md` — design doc covering the agent boundary
-- `data/sample_emails_REAL/` — real client emails (gitignored)
-
-## Sensitivity
-
-The 10 sample emails contain real Adani internal data — employee names,
-customer names, transaction details. They live in `data/sample_emails_REAL/`
-which is gitignored. **Never commit them.** A future task: generate
-synthetic equivalents preserving structure for the public eval suite.
-
-## What's next
-
-- Day 1 (~3 hrs): Triage agent (10/10 evals on email_kind classification)
-- Day 2 (~3 hrs): Bank credit extraction (9/10 evals)
-- Day 3 (~3 hrs): Invoice allocation extraction (6/10 evals)
-- Day 4 (~3 hrs): Edge cases (UPI, IFT, partial bookings)
-- Day 5 (~3 hrs): Wire to Week 3 data layer (customer master lookup)
-- Day 6 (~3 hrs): Streamlit HITL UI
-- Day 7 (~3 hrs): Polish, FINDINGS, commit
-
-
-## Scope: body-first extraction
-
-This agent extracts remittance data from email body HTML. In the 10 real
-sample emails, 9 contain all data in the body and 1 (a non-remittance) has
-attachments. The body-first scope covers the dominant case in our sample
-data.
-
-**Attachment handling is planned (Project 1 Day 8-9 extension), not a
-Day 1-7 deliverable.** When `hasAttachments=true` AND body HTML lacks
-recognizable tables, the agent routes the email as
-`email_kind=needs_attachment_parsing` — a deferred classification that
-honestly signals "I'd handle this if I could parse the attachment yet."
-
-This pattern mirrors Week 3's `awaiting_remittance` band: rather than
-guess incorrectly, the agent acknowledges its current limitations and
-defers to a later pipeline stage.
-
-When attachment handling is added, these emails will be re-classified
-into one of the four primary kinds based on attachment content.
-
-## Project 1 status
-
-Days 0-4 ✅ shipped. Agent produces complete RemittanceExtraction per email.
-
-### Pipeline architecture
-
-[Email API] → [Triage] → [Bank Credit Extract] → [Allocation Extract]
-→ [Reconcile] → [Assemble] → [RemittanceExtraction]
-→ [Project 2: Matching Agent (future)]
-
-10/10 single-run, 10/10 with 5/5 multi-run threshold.
-
-Coverage:
-- 5 email kinds
-- 6 payment modes
-- 6 allocation column conventions
-- 5 payment intent types
-- 4 reconciliation outcomes
-- 3 routing bands
-- N×N cardinality
-- Negative amounts (credit memos)
-- Absent columns (template variations)
-
-### What this agent does NOT do
-
-This is the **remittance extraction** agent. It produces structured
-RemittanceExtraction objects from emails. It does NOT match against the
-open ledger or bank statements — that's Project 2's deliverable
-(FULLY_MATCHED, SHORT_PAYMENT, OVER_PAYMENT, INCORRECT_INVOICE
-classifications).
-
-## HITL UI
-
-Day 6 added a Streamlit interface for reviewing extractions, accepting or
-rejecting routing decisions, and seeing agent reasoning.
-
-### Run
+### Run the public eval suite (synthetic data, no API keys needed except Azure)
 
 ```bash
-# 1. Generate the extraction cache (one-time, regenerates on demand)
-python cache_extractions.py
-
-# 2. Run the Streamlit app
-streamlit run app.py
-
-# 3. Open http://localhost:8501 in your browser
+EMAIL_SAMPLES_DIR=data/sample_emails_PUBLIC pytest test_public_eval.py -v -s
 ```
 
-### Three views
+Expected: 8/8 passing on synthetic samples.
 
-- **📥 Inbox:** all extractions sorted by routing band (HITL first), with
-  filter by routing decision, key fields visible at a glance, and a "View →"
-  button to drill into details.
+### Run the agent against synthetic samples
 
-- **📄 Detail:** full RemittanceExtraction for one email — triage result,
-  bank credits, allocations, reconciliation status, master resolution,
-  agent reasoning notes, and accept/reject buttons. Email body rendered
-  side-by-side for context.
+```bash
+EMAIL_SAMPLES_DIR=data/sample_emails_PUBLIC python agent.py
+```
 
-- **📊 Summary:** aggregate stats — counts by routing band, average
-  confidence per band, resolution stats, accepted/rejected/pending review.
+### Launch the HITL UI
 
-### Workflow
+```bash
+EMAIL_SAMPLES_DIR=data/sample_emails_PUBLIC python cache_extractions.py
+streamlit run app.py
+# Open http://localhost:8501
+```
 
-For HITL_REVIEW emails, a reviewer can:
-1. Open the email in the Detail view
-2. See the agent's full reasoning + extracted data side-by-side with the
-   raw email body
-3. Add notes (optional) explaining the decision
-4. Click Accept (✓) or Reject (✗)
-5. Decision is persisted to `data/actions.json` (gitignored, contains
-   reviewer notes)
+## Repository structure
+schemas.py                  Pydantic models for the entire pipeline
+email_source.py             Email source abstraction (file + API)
+html_tools.py               Deterministic HTML parsing helpers
+triage.py                   Rule-based email kind classification
+extract_bank_credit.py      LLM-based bank credit extraction
+extract_allocation.py       LLM-based allocation extraction (batched)
+reconcile.py                Email-internal reconciliation
+confidence.py               Rule-based confidence + routing
+assemble.py                 Combines stages into final RemittanceExtraction
+resolve.py                  Master data resolution against canonical tables
+sql_client.py / db.py       SQL gateway client (from Week 3 bank importer)
+agent.py                    LangGraph state machine wiring all stages
+cache_extractions.py        Pre-computes extractions for the UI
+app.py                      Streamlit HITL interface
+eval_data.py                Real-data eval cases (uses gitignored samples)
+eval_data_public.py         Public eval cases (uses synthetic samples)
+test_agent.py               Pytest harness for real evals
+test_public_eval.py         Pytest harness for public evals
+data/sample_emails_REAL/    Real client emails (gitignored)
+data/sample_emails_PUBLIC/  Synthetic samples (committed)
+docs/screenshot_*.png       UI screenshots for README
+INTEGRATION.md              System integration design
+FINDINGS.md                 Engineering lessons captured during development
 
-Accepted decisions would advance to Project 2's matching agent in
-production. Rejected decisions would route to a separate exception
-queue for follow-up.
+## Engineering principles
+
+This codebase reflects three principles I think matter for production agents:
+
+### Deterministic where possible, LLM where it earns its place
+
+Triage, reconciliation, confidence scoring, and master resolution are all
+rule-based. Only narrative parsing (Day 2) and column-name reasoning
+(Day 3) use LLM calls. This isn't because the LLM CAN'T do triage; it's
+because rules handle it more reliably and faster, and the LLM adds value
+elsewhere where rules genuinely fail.
+
+### Real data drives schema, not hypothetical defenses
+
+Initial code had a "defensive" fallback for finding the narrative column
+(`["particulars", "chq no & bank gl"]`). The fallback was for a hypothetical
+case that didn't exist in real data, and it caused a real bug when the
+fallback hit before the primary. After fixing, the code is simpler and
+correct: narrative is always in `Particulars`. Real data drove the schema.
+
+### Multi-run stability is the production target
+
+Single-run pytest gives false confidence on LLM agents. Production targets
+must be multi-run. The current pipeline maintains 50/50 stability across
+10 cases × 5 runs.
+
+## What this agent does NOT do
+
+This is the **remittance extraction** agent. It does NOT match against
+the open ledger or bank statements — that's Project 2's deliverable
+(FULLY_MATCHED, SHORT_PAYMENT, OVER_PAYMENT classifications).
+
+The boundary is deliberate: Project 1 produces structured input; Project 2
+consumes it for matching; Project 3 handles GL posting and exception
+triage.
+
+## See also
+
+- [INTEGRATION.md](INTEGRATION.md) — System integration design
+- [FINDINGS.md](FINDINGS.md) — Engineering lessons captured during development
