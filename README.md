@@ -94,3 +94,34 @@ defers to a later pipeline stage.
 
 When attachment handling is added, these emails will be re-classified
 into one of the four primary kinds based on attachment content.
+
+## Project 1 status
+
+Days 0-4 ✅ shipped. Agent produces complete RemittanceExtraction per email.
+
+### Pipeline architecture
+
+[Email API] → [Triage] → [Bank Credit Extract] → [Allocation Extract]
+→ [Reconcile] → [Assemble] → [RemittanceExtraction]
+→ [Project 2: Matching Agent (future)]
+
+10/10 single-run, 10/10 with 5/5 multi-run threshold.
+
+Coverage:
+- 5 email kinds
+- 6 payment modes
+- 6 allocation column conventions
+- 5 payment intent types
+- 4 reconciliation outcomes
+- 3 routing bands
+- N×N cardinality
+- Negative amounts (credit memos)
+- Absent columns (template variations)
+
+### What this agent does NOT do
+
+This is the **remittance extraction** agent. It produces structured
+RemittanceExtraction objects from emails. It does NOT match against the
+open ledger or bank statements — that's Project 2's deliverable
+(FULLY_MATCHED, SHORT_PAYMENT, OVER_PAYMENT, INCORRECT_INVOICE
+classifications).

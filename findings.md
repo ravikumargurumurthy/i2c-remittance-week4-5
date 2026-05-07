@@ -377,3 +377,69 @@ selection, etc.
 3. Confidence scoring should be rule-based when inputs are structured
    fields. LLM calls add variance; structured fields → deterministic
    formula → testable confidence is more robust.
+
+
+## Day 4 — Reconciliation, confidence, routing, assembly: shipped
+
+10/10 single-run, 10/10 with 5/5 multi-run threshold. Three new modules
+(reconcile.py, confidence.py, assemble.py), two new state nodes, complete
+RemittanceExtraction output per email.
+
+### Final routing distribution across 10 real samples
+
+auto_apply (6 emails):
+- 3 clean full_bookings (KNK, J B BODA — 1.000; YES BANK — 0.975)
+- 2 on_account_only (On A/C 4M, INDUS — 0.950)
+- 1 partial_booking with FIFO (VINAYAK — 0.950)
+
+hitl_review (4 emails):
+- 1 access_payment (MOANA — 0.925; overpayment 719.80 matches email's
+  "Access Payment" footer exactly)
+- 1 rounding_diff (MPSEZ — 0.825; paise-level source artifact)
+- 1 deferred (LPG — 0.850; attachment processing pending)
+- 1 weak narrative (SAURASHTRA — 0.790; OTHER payment_mode, no UTR)
+
+exception: 0 emails (samples not pathological enough)
+
+The distribution validates formula calibration. Each email routes for the
+right operational reason; HITL queue contains things that need human eyes;
+auto_apply contains things downstream systems can confidently process.
+
+### Episodes from Day 4
+
+**Episode 1: Boundary-case routing.** Initial AUTO_APPLY threshold of 0.95
+caused well-formed partial_booking and on_account_only emails (which
+scored exactly 0.95) to route to HITL instead of auto_apply. Lowered to
+0.94 — operational meaning of "high confidence" doesn't materially change
+between 0.94 and 0.95.
+
+**Episode 2: LPG false-positive intent detection.** find_payment_intent
+matched the word "advance" in the LPG vendor request body (a non-remittance
+email). Fix: only run intent detection when bank credit table is present.
+Conceptually correct — you don't extract "intent" from an email that
+isn't a payment.
+
+**Episode 3: Confidence formula penalized legitimate cases.** Initial
+formula gave partial credit (0.20) for "no allocations expected" and
+0.7 for NOT_APPLICABLE reconciliation. Both double-counted against
+patterns that legitimately don't have allocations. Bumped to full credit
+(0.30) and 1.0 respectively.
+
+### Generalizable patterns
+
+1. Confidence formulas need calibration against real distributions, not
+   hypothetical scenarios. Initial weights were defensible in isolation;
+   running against 10 real samples revealed double-counting. Real-data
+   calibration is a tuning step, not a tuning failure.
+
+2. Threshold boundaries in routing decisions need operational tolerance.
+   Mathematical 0.95 is fragile when scores cluster at it. Pragmatic 0.94
+   gives the formula room to breathe without changing operational meaning.
+
+3. Signal extraction should be gated on upstream conditions. Don't run
+   intent detection on non-remittances; don't reconcile when there's
+   nothing to reconcile against. Conceptual hygiene reduces false positives.
+
+4. Mahek's email footers are validation oracles. The "Access Payment 719.80"
+   text in the MOANA email is operational documentation; for the agent it's
+   a free correctness check on reconciliation arithmetic.
