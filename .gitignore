@@ -16,3 +16,7 @@ real_email_*.json
 
 # Trace outputs (carried over from Week 3 pattern)
 traces/
+
+# Day 6: cached extractions (contain real client data)
+data/extractions_cache.json
+data/actions.json

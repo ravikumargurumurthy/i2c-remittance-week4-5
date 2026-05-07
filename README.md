@@ -125,3 +125,49 @@ RemittanceExtraction objects from emails. It does NOT match against the
 open ledger or bank statements — that's Project 2's deliverable
 (FULLY_MATCHED, SHORT_PAYMENT, OVER_PAYMENT, INCORRECT_INVOICE
 classifications).
+
+## HITL UI
+
+Day 6 added a Streamlit interface for reviewing extractions, accepting or
+rejecting routing decisions, and seeing agent reasoning.
+
+### Run
+
+```bash
+# 1. Generate the extraction cache (one-time, regenerates on demand)
+python cache_extractions.py
+
+# 2. Run the Streamlit app
+streamlit run app.py
+
+# 3. Open http://localhost:8501 in your browser
+```
+
+### Three views
+
+- **📥 Inbox:** all extractions sorted by routing band (HITL first), with
+  filter by routing decision, key fields visible at a glance, and a "View →"
+  button to drill into details.
+
+- **📄 Detail:** full RemittanceExtraction for one email — triage result,
+  bank credits, allocations, reconciliation status, master resolution,
+  agent reasoning notes, and accept/reject buttons. Email body rendered
+  side-by-side for context.
+
+- **📊 Summary:** aggregate stats — counts by routing band, average
+  confidence per band, resolution stats, accepted/rejected/pending review.
+
+### Workflow
+
+For HITL_REVIEW emails, a reviewer can:
+1. Open the email in the Detail view
+2. See the agent's full reasoning + extracted data side-by-side with the
+   raw email body
+3. Add notes (optional) explaining the decision
+4. Click Accept (✓) or Reject (✗)
+5. Decision is persisted to `data/actions.json` (gitignored, contains
+   reviewer notes)
+
+Accepted decisions would advance to Project 2's matching agent in
+production. Rejected decisions would route to a separate exception
+queue for follow-up.

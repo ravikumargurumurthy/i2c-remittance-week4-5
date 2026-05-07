@@ -608,3 +608,54 @@ across customers.
    correctness signal. When 5/5 runs produce identical confidence
    scores down to 3 decimals, the formula is doing what you think it's
    doing.
+
+## Day 6 — Streamlit HITL UI shipped
+
+Added a working web interface for reviewing extractions. Three views:
+inbox, detail, summary. File-backed action persistence. Email body
+rendered side-by-side with extraction data.
+
+### Architecture decisions
+
+1. **Cached extractions, not live agent calls.** Page loads stay fast
+   (no LLM calls per page render). Refresh button regenerates the cache
+   on-demand. Trade-off: the UI shows snapshot data, not live extractions.
+   Acceptable because: (a) extractions are deterministic across runs at
+   this point, (b) demos benefit from speed, (c) live mode is a
+   future enhancement.
+
+2. **File-backed action persistence.** Decisions survive page reloads.
+   Makes the UI feel real rather than a toy. data/actions.json is
+   gitignored along with the extractions cache.
+
+3. **Default Streamlit styling.** Functionality first; polish later.
+   Streamlit's defaults are clean enough for portfolio demos.
+
+### Why the UI matters for portfolio
+
+Most agent projects show command-line output. Day 6 makes Project 1
+visually demonstrable in interviews and portfolio reviews. A reviewer
+or hiring manager can see:
+
+- The agent's HITL queue (4 emails routed for review)
+- Why each one needs review (rounding diff, access payment, deferred
+  attachment, weak narrative)
+- The reasoning behind each decision visible in plain language
+- A workflow that mirrors actual cash app operations
+
+The visual proof point is qualitatively different from "10/10 evals
+passing in pytest." Both matter; the UI is what makes the agent feel
+like a real product.
+
+### Generalizable patterns
+
+1. Agent UIs benefit from caching the agent's output, not re-running
+   the agent on every page load. Page load latency dominates UX
+   perception; LLM calls in the request path destroy that.
+
+2. File-backed persistence (even a single JSON) beats in-memory state
+   for demo realism. The UI doesn't need a database; it needs to remember.
+
+3. Three-view structure (inbox / detail / summary) is the standard
+   shape for any review-and-decide interface. List + drill-in + aggregate.
+   Worth memorizing for future agent UIs.
