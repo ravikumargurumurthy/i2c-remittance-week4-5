@@ -333,3 +333,27 @@ The boundary is deliberate. Project 1's job ends when the structured
 extraction is produced and validated. Project 2's job begins by consuming
 that extraction and comparing it against the open ledger and bank
 statements to produce match decisions.
+
+## Customer master is the canonical source for customer_name
+
+Bank narratives contain abbreviated/encoded payer references like
+"AAOCGAAOCG" (a SAP/banking encoding) instead of legal customer names.
+For On A/C 4M, the bank narrative said "AAOCGAAOCG" but the customer
+master had the legal name "INDIAN COAST GUARD" against the same
+customer_number 4000000321.
+
+Same pattern for INDUS: bank narrative says "INDUS TOWERS LIMITED IPA"
+(includes "IPA" suffix from invoice processing); master says
+"INDUS TOWERS LTD" (canonical legal name).
+
+Fix: when customer_reference is known, look up customer_name in master
+BEFORE falling back to bank narrative. Master is authoritative.
+
+For VINAYAK (no customer_reference available), bank narrative remains
+the only source. customer_name="THACKER" — operationally sufficient
+for HITL routing where a reviewer confirms the customer match.
+
+Generalizable: when you have a foreign key, prefer the master record
+over derived/inferred data. Bank narratives, email free-text, and
+similar derived sources should be treated as fallbacks, not primary
+sources.

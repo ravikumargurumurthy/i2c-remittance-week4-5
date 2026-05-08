@@ -34,8 +34,11 @@ from schemas import (
     EmailKind,
     InvoiceAllocation,
     RemittanceExtraction,
+    CustomerOnlyEntry,
 )
-from triage import TriageResult, classify_email
+from triage import TriageResult, classify_email, find_customer_only_table
+
+from extract_customer_only import extract_customer_entries_from_table
 
 
 BANK_CREDIT_ELIGIBLE_KINDS = {
@@ -48,6 +51,10 @@ ALLOCATION_ELIGIBLE_KINDS = {
     EmailKind.FULL_BOOKING,
 }
 
+CUSTOMER_ONLY_ELIGIBLE_KINDS = {
+    EmailKind.PARTIAL_BOOKING,
+    EmailKind.ON_ACCOUNT_ONLY,
+}
 
 class AgentState(BaseModel):
     message_id: str
@@ -58,6 +65,7 @@ class AgentState(BaseModel):
     invoice_allocations: list[InvoiceAllocation] = Field(default_factory=list)
     reconciliation: Optional[ReconciliationResult] = None
     extraction: Optional[RemittanceExtraction] = None
+    customer_entries: list[CustomerOnlyEntry] = Field(default_factory=list)
 
     messages: Annotated[list[BaseMessage], add] = Field(default_factory=list)
     error: Optional[str] = None
@@ -123,6 +131,37 @@ def extract_allocations_node(state: AgentState) -> dict:
 
     return {"invoice_allocations": allocations}
 
+def extract_customer_entries_node(state: AgentState) -> dict:
+    """Extract customer entries from a customer-only table when present.
+
+    Only runs for email kinds where allocations are absent but a
+    customer-only table is detected (partial_booking, on_account_only).
+    """
+    if state.error:
+        return {}
+    if not state.triage:
+        return {"error": "extract_customer_entries called before triage"}
+
+    # Only run for kinds that may have customer-only tables
+    if state.triage.email_kind not in CUSTOMER_ONLY_ELIGIBLE_KINDS:
+        return {"customer_entries": []}
+
+    # Triage already detected the table; only run if the signal says so
+    if not state.triage.detected_signals.get("has_customer_only_table"):
+        return {"customer_entries": []}
+
+    html = state.email_json.get("body", {}).get("content", "") or ""
+    table = find_customer_only_table(html)
+    if not table:
+        return {"customer_entries": []}
+
+    try:
+        entries = extract_customer_entries_from_table(table)
+    except Exception as e:
+        return {
+            "error": f"Customer entries extraction failed: {type(e).__name__}: {e}"
+        }
+    return {"customer_entries": entries}
 
 def reconcile_node(state: AgentState) -> dict:
     if state.error:
@@ -158,6 +197,7 @@ def assemble_node(state: AgentState) -> dict:
             bank_credits=state.bank_credits,
             allocations=state.invoice_allocations,
             reconciliation=state.reconciliation,
+            customer_entries=state.customer_entries,
         )
     except Exception as e:
         return {"error": f"Assembly failed: {type(e).__name__}: {e}"}
@@ -206,11 +246,13 @@ builder.add_node("extract_allocations", extract_allocations_node)
 builder.add_node("reconcile", reconcile_node)
 builder.add_node("assemble", assemble_node)
 builder.add_node("resolve", resolve_node)
+builder.add_node("extract_customer_entries", extract_customer_entries_node)
 
 builder.add_edge(START, "triage")
 builder.add_edge("triage", "extract_bank_credits")
 builder.add_edge("extract_bank_credits", "extract_allocations")
-builder.add_edge("extract_allocations", "reconcile")
+builder.add_edge("extract_allocations", "extract_customer_entries")
+builder.add_edge("extract_customer_entries", "reconcile") 
 builder.add_edge("reconcile", "assemble")
 builder.add_edge("assemble", "resolve")
 builder.add_edge("resolve", END)

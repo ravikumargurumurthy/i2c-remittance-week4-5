@@ -206,6 +206,17 @@ class InvoiceAllocation(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+class CustomerOnlyEntry(BaseModel):
+    """One row from a customer-only table (e.g., VINAYAK's FIFO email).
+
+    Used as a structured alternative source of customer reference + name
+    when the email lacks allocation rows.
+    """
+    customer_number: str
+    customer_name: Optional[str] = None
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
 class ResolutionInfo(BaseModel):
     """Resolution status of customer and invoice references against master tables.
 
@@ -331,6 +342,9 @@ class RemittanceExtraction(BaseModel):
             "score and matches Week 3's bank importer enum for consistency."
         ),
     )
+
+    # NEW: Customer entries from a customer-only table (e.g., VINAYAK's FIFO email)
+    customer_entries: list[CustomerOnlyEntry] = Field(default_factory=list)
 
     # Extracted data
     bank_credits: list[BankCreditLine] = Field(default_factory=list)
