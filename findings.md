@@ -357,3 +357,23 @@ Generalizable: when you have a foreign key, prefer the master record
 over derived/inferred data. Bank narratives, email free-text, and
 similar derived sources should be treated as fallbacks, not primary
 sources.
+
+## Don't assume what's in the attachment
+
+LPG was classified as needs_attachment_parsing because the email body
+lacked a remittance table. We assumed the attachment had a payment advice
+based on this signal alone.
+
+In reality, the attachment was named "invoice 20255.pdf" and the email
+subject mentioned "line crossing application" (a civil engineering /
+regulatory matter). The email is likely a vendor invoice, not a remittance.
+
+Lesson: triage signals point AT the attachment but don't validate its
+content. Production systems should:
+1. Open the attachment
+2. Detect what KIND of document it is (remittance vs invoice vs other)
+3. Route accordingly
+
+For Project 1.5: attachment processing should include type detection
+(by filename pattern + content inspection), not just "extract whatever
+table is in there."

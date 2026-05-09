@@ -32,6 +32,23 @@ from html_tools import (
 )
 from schemas import EmailKind
 
+# Subject-line keywords that indicate non-payment context.
+# Emails with these patterns route to NON_REMITTANCE regardless of whether
+# they have body tables or attachments. Examples:
+# - "Application for Adani LPG line crossing..." (vendor invoice)
+# - "RFP submission..." (procurement)
+# - "Tender for..." (vendor onboarding)
+NON_REMITTANCE_SUBJECT_KEYWORDS = (
+    "application for",
+    "line crossing",
+    "rfp",
+    "request for proposal",
+    "tender",
+    "purchase order request",
+    "vendor onboarding",
+    "vendor registration",
+    "approval request",
+)
 
 @dataclass
 class TriageResult:
@@ -39,6 +56,19 @@ class TriageResult:
     email_kind: EmailKind
     reasoning: str  # human-readable explanation, useful for debugging
     detected_signals: dict  # which finders fired and which didn't
+
+def _is_non_payment_subject(subject: str) -> tuple[bool, Optional[str]]:
+    """Check if subject indicates a non-payment context.
+    
+    Returns (is_non_payment, matched_keyword).
+    """
+    if not subject:
+        return False, None
+    subject_lower = subject.lower()
+    for keyword in NON_REMITTANCE_SUBJECT_KEYWORDS:
+        if keyword in subject_lower:
+            return True, keyword
+    return False, None
 
 
 def classify_email(email_json: dict) -> TriageResult:
@@ -75,7 +105,26 @@ def classify_email(email_json: dict) -> TriageResult:
         "payment_intent": intent_value,   # NEW
         "intent_remark_raw": intent_remark_raw,   # NEW
     }
-
+    
+    # Rule 0: subject-line signals indicating non-payment context.
+    # These take precedence over table-presence checks because the email's
+    # intent (per subject) is more authoritative than the absence of tables.
+    # Examples: "Application for line crossing", "RFP submission", "Tender for X"
+    subject = email_json.get("subject", "") or ""
+    is_non_payment, matched_keyword = _is_non_payment_subject(subject)
+    if is_non_payment:
+        signals["non_remittance_reason"] = "subject_indicates_non_payment"
+        signals["matched_subject_keyword"] = matched_keyword
+        return TriageResult(
+            email_kind=EmailKind.NON_REMITTANCE,
+            reasoning=(
+                f"Subject indicates non-payment context: matched keyword "
+                f"'{matched_keyword}'. Email is likely a vendor invoice, RFP, "
+                f"tender, or other non-remittance communication. Routes to "
+                f"NON_REMITTANCE regardless of body content or attachments."
+            ),
+            detected_signals=signals,
+        )
     # Rule 1: no bank-credit table
     if not bank_credit:
         if has_attachments:
